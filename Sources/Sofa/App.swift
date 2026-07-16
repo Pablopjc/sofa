@@ -13,8 +13,11 @@ final class SofaPanel: NSPanel {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static let panelWidth: CGFloat = 380
+
     private var statusItem: NSStatusItem!
     private var panel: SofaPanel!
+    private var hostingView: NSHostingView<ContentView>!
     private var pendingJoin: String?
     private var cancellables = Set<AnyCancellable>()
 
@@ -47,10 +50,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
 
+        // Re-fit the panel whenever the content changes shape (entering a room,
+        // switching player, a card appearing). objectWillChange fires *before*
+        // the change lands, so measure on the next turn of the run loop.
+        AppState.shared.objectWillChange
+            .sink { [weak self] _ in
+                DispatchQueue.main.async { self?.resizePanelToFit() }
+            }
+            .store(in: &cancellables)
+        AppState.shared.builtin.objectWillChange
+            .sink { [weak self] _ in
+                DispatchQueue.main.async { self?.resizePanelToFit() }
+            }
+            .store(in: &cancellables)
+
         let content = NSHostingView(rootView: ContentView())
+        hostingView = content
         panel = SofaPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 600),
-            styleMask: [.nonactivatingPanel, .fullSizeContentView, .borderless, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: 400),
+            styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered, defer: false
         )
         panel.isFloatingPanel = true
@@ -154,6 +172,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return img
     }
 
+    // MARK: - Panel sizing
+
+    /// Measures the SwiftUI content and resizes the panel to match, so the
+    /// panel is never taller than what it shows.
+    ///
+    /// The size is measured with a throwaway hosting view: the real one is
+    /// installed in the window, so its own fittingSize just reports back the
+    /// window height it was given.
+    private func resizePanelToFit() {
+        let probe = NSHostingView(rootView: ContentView())
+        probe.layoutSubtreeIfNeeded()
+        let ideal = probe.fittingSize.height
+        guard ideal > 100 else { return } // sanity: never collapse the panel
+
+        let maxHeight = (NSScreen.main?.visibleFrame.height ?? 800) - 24
+        let height = min(ideal, maxHeight)
+        guard abs(panel.frame.height - height) > 0.5 else { return }
+
+        // Keep the top edge pinned: the panel hangs from the menu bar.
+        var frame = panel.frame
+        let topEdge = frame.maxY
+        frame.size = NSSize(width: Self.panelWidth, height: height)
+        frame.origin.y = topEdge - height
+        panel.setFrame(frame, display: true)
+    }
+
     // MARK: - Panel toggling
 
     @objc private func togglePanel() {
@@ -165,6 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showPanel() {
+        resizePanelToFit()
         positionPanel()
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

@@ -48,7 +48,9 @@ struct ContentView: View {
                 IdleView()
             }
         }
-        .frame(minWidth: 360, idealWidth: 380, minHeight: 420)
+        // No minHeight: the panel measures this view and sizes itself to fit,
+        // so there's never a slab of empty glass under the content.
+        .frame(width: 380)
         .overlay(alignment: .bottom) {
             if let toast = state.toast {
                 Text(toast)
@@ -158,15 +160,13 @@ struct IdleView: View {
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
 
-            Spacer()
-
             Button("Test Zone") { state.enterTestZone() }
                 .buttonStyle(.plain)
                 .font(.system(size: 12))
                 .foregroundStyle(Color.accentColor)
-                .padding(.bottom, 4)
+                .padding(.top, 2)
         }
-        .padding(.horizontal, 16).padding(.bottom, 12)
+        .padding(.horizontal, 16).padding(.bottom, 14)
     }
 }
 
@@ -177,31 +177,31 @@ struct RoomView: View {
     @ObservedObject var builtin = AppState.shared.builtin
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 10) {
-                if state.isHosting && !state.inviteLink.isEmpty {
-                    InviteCard()
-                }
-                if state.isTestMode {
-                    TestFriendCard()
-                }
-                PlayerCard()
-                if state.playerChoice == .builtin {
-                    BuiltinStage()
-                }
-                LayoutCard()
-                AudioCard()
-
-                Button("Leave Watch Party") {
-                    state.leaveRoom()
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.red)
-                .padding(.vertical, 6)
+        // A plain stack rather than a ScrollView: the panel measures this and
+        // sizes itself to fit, so it's exactly as tall as the content needs.
+        VStack(spacing: 10) {
+            if state.isHosting && !state.inviteLink.isEmpty {
+                InviteCard()
             }
-            .padding(.horizontal, 16).padding(.bottom, 14).padding(.top, 4)
+            if state.isTestMode {
+                TestFriendCard()
+            }
+            PlayerCard()
+            if state.playerChoice == .builtin {
+                BuiltinStage()
+            }
+            LayoutCard()
+            AudioCard()
+
+            Button("Leave Watch Party") {
+                state.leaveRoom()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(.red)
+            .padding(.vertical, 2)
         }
+        .padding(.horizontal, 16).padding(.bottom, 14).padding(.top, 4)
     }
 }
 
