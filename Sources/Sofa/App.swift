@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu bar app: no Dock icon
+        installEditMenu()
 
         // Variable length: the "friends connected" sofa is wider than the
         // lone armchair, so the item grows when someone joins.
@@ -66,6 +67,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
             glass.cornerRadius = 22
+            glass.style = .regular
+            // Without clipping, the glass paints past its rounded corners and the
+            // window's shadow shows through there as a hard dark rim.
+            glass.clipsToBounds = true
             glass.contentView = content
             panel.contentView = glass
         } else {
@@ -105,7 +110,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Lone armchair when nobody's around, 3-seater sofa once friends join.
+    /// An accessory app shows no menu bar, but ⌘X/⌘C/⌘V are still dispatched
+    /// through the main menu's key equivalents — with no main menu at all,
+    /// pasting into the invite field silently does nothing.
+    private func installEditMenu() {
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        let editItem = NSMenuItem()
+        editItem.submenu = edit
+        let main = NSMenu()
+        main.addItem(editItem)
+        NSApp.mainMenu = main
+    }
+
+    /// Lone armchair when nobody's around, 2-seat sofa once friends join.
     private func updateTrayIcon(friendsConnected: Bool) {
         let name = friendsConnected ? "traySofaTemplate" : "trayTemplate"
         statusItem.button?.image = Self.trayIcon(named: name)

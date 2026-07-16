@@ -108,6 +108,8 @@ final class AppState: ObservableObject {
     @Published var detectedSources: [PlayerChoice] = []
     /// Running media apps that can't be automated (shown as an explanation).
     @Published var unsupportedNotice: String?
+    /// The video-call app currently running, if any (for the Arrange layout).
+    @Published var detectedCallApp: WindowArranger.CallApp?
     private var detectTimer: Timer?
 
     // Audio
@@ -223,6 +225,7 @@ final class AppState: ObservableObject {
         extLive = .searching
         detectedSources = []
         unsupportedNotice = nil
+        detectedCallApp = nil
     }
 
     // MARK: - Active source detection
@@ -245,6 +248,34 @@ final class AppState: ObservableObject {
         if running != detectedSources { detectedSources = running }
         let notice = MediaSourceDetector.runningUnsupported().first?.advice
         if notice != unsupportedNotice { unsupportedNotice = notice }
+        let call = WindowArranger.runningCallApp()
+        if call?.bundleID != detectedCallApp?.bundleID { detectedCallApp = call }
+    }
+
+    // MARK: - Window layout
+
+    /// Arranges the movie and the call side by side, prompting for the
+    /// Accessibility permission the first time.
+    func arrangeWindows() {
+        guard let call = detectedCallApp else {
+            showToast("No video call found — start your FaceTime call first.")
+            return
+        }
+        guard playerChoice != .builtin else {
+            showToast("Arranging works with an external player, not Sofa’s own.")
+            return
+        }
+        guard WindowArranger.hasAccessibilityPermission else {
+            WindowArranger.requestAccessibilityPermission()
+            showToast("Allow Sofa in Accessibility, then press Arrange again.")
+            return
+        }
+        do {
+            try WindowArranger.arrange(player: playerChoice, callApp: call)
+            showToast("Arranged: \(playerChoice.shortLabel) left, \(call.name) right.")
+        } catch {
+            showToast(error.localizedDescription)
+        }
     }
 
     // MARK: - Player choice

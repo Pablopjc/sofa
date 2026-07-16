@@ -186,6 +186,7 @@ struct RoomView: View {
                 if state.playerChoice == .builtin {
                     BuiltinStage()
                 }
+                LayoutCard()
                 AudioCard()
 
                 Button("Leave Watch Party") {
@@ -485,6 +486,65 @@ struct BuiltinStage: View {
         if panel.runModal() == .OK, let url = panel.url {
             state.builtin.load(url: url)
         }
+    }
+}
+
+/// One-click window layout: movie left, video call right, nothing overlapping.
+struct LayoutCard: View {
+    @ObservedObject var state = AppState.shared
+
+    var body: some View {
+        Card {
+            SectionLabel(text: "On a call?")
+            HStack(spacing: 10) {
+                LayoutDiagram()
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(headline)
+                        .font(.system(size: 12.5, weight: .medium))
+                    Text(subline)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            Button("Arrange Windows") { state.arrangeWindows() }
+                .sofaGlassButton()
+                .disabled(state.detectedCallApp == nil || state.playerChoice == .builtin)
+        }
+    }
+
+    private var headline: String {
+        if let call = state.detectedCallApp {
+            return "\(call.name) call detected"
+        }
+        return "No call detected"
+    }
+
+    private var subline: String {
+        if state.playerChoice == .builtin {
+            return "Arranging needs an external player like QuickTime or your browser."
+        }
+        if state.detectedCallApp != nil {
+            return "Puts your movie on the left, as big as it fits, and the call in a column on the right — no overlap."
+        }
+        return "Start a FaceTime, Zoom, Discord, Teams or WhatsApp call and Sofa can lay the windows out for you."
+    }
+}
+
+/// Tiny picture of what Arrange does: wide video left, small call right.
+struct LayoutDiagram: View {
+    var body: some View {
+        HStack(spacing: 2) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color.accentColor.opacity(0.55))
+                .frame(width: 30, height: 26)
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color.primary.opacity(0.25))
+                .frame(width: 9, height: 14)
+        }
+        .padding(3)
+        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 4))
     }
 }
 
