@@ -20,6 +20,7 @@ cp Info.plist "$APP/Contents/Info.plist"
 cp Resources/icon.icns "$APP/Contents/Resources/icon.icns"
 cp Resources/demo.mp4 "$APP/Contents/Resources/demo.mp4"
 cp Resources/trayTemplate.png Resources/trayTemplate@2x.png "$APP/Contents/Resources/"
+cp Resources/traySofaTemplate.png Resources/traySofaTemplate@2x.png "$APP/Contents/Resources/"
 
 # Adaptive light/dark icon (macOS 26+) — compiled from the Icon Composer bundle.
 ACTOOL=""

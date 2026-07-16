@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 // MARK: - Panel
@@ -15,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var panel: SofaPanel!
     private var pendingJoin: String?
+    private var cancellables = Set<AnyCancellable>()
 
     // sofa:// links (modern AppKit delegate API — AppKit wires up the Apple
     // Event handler itself; registering one manually gets overwritten).
@@ -26,12 +28,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu bar app: no Dock icon
 
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        // Variable length: the "friends connected" sofa is wider than the
+        // lone armchair, so the item grows when someone joins.
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = Self.trayIcon()
             button.action = #selector(togglePanel)
             button.target = self
         }
+        // Swap armchair ⇄ sofa as friends come and go, so you can tell at a
+        // glance from the menu bar whether anyone is in the room.
+        // (@Published fires immediately, which sets the initial armchair.)
+        AppState.shared.$peerCount
+            .map { $0 > 1 } // the relay counts us too
+            .removeDuplicates()
+            .sink { [weak self] friendsConnected in
+                self?.updateTrayIcon(friendsConnected: friendsConnected)
+            }
+            .store(in: &cancellables)
 
         let content = NSHostingView(rootView: ContentView())
         panel = SofaPanel(
@@ -92,16 +105,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Sofa's custom armchair glyph (same one as the Legacy app), as a
-    /// template image so macOS tints it like the system menu bar icons.
-    private static func trayIcon() -> NSImage? {
-        guard let base = Bundle.main.url(forResource: "trayTemplate", withExtension: "png"),
-              let img = NSImage(contentsOf: base) else {
+    /// Lone armchair when nobody's around, 3-seater sofa once friends join.
+    private func updateTrayIcon(friendsConnected: Bool) {
+        let name = friendsConnected ? "traySofaTemplate" : "trayTemplate"
+        statusItem.button?.image = Self.trayIcon(named: name)
+        statusItem.button?.toolTip = friendsConnected
+            ? "Sofa — friends connected"
+            : "Sofa — watch together"
+    }
+
+    /// Sofa's custom glyphs, as template images so macOS tints them like the
+    /// system's own menu bar icons.
+    private static func trayIcon(named base: String) -> NSImage? {
+        guard let url = Bundle.main.url(forResource: base, withExtension: "png"),
+              let img = NSImage(contentsOf: url) else {
             let fallback = NSImage(systemSymbolName: "sofa.fill", accessibilityDescription: "Sofa")
             fallback?.isTemplate = true
             return fallback
         }
-        if let retinaURL = Bundle.main.url(forResource: "trayTemplate@2x", withExtension: "png"),
+        if let retinaURL = Bundle.main.url(forResource: "\(base)@2x", withExtension: "png"),
            let retina = NSImageRep(contentsOf: retinaURL) {
             retina.size = img.size
             img.addRepresentation(retina)
