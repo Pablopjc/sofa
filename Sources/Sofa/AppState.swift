@@ -125,6 +125,7 @@ final class AppState: ObservableObject {
 
     let sync = SyncEngine()
     let builtin = BuiltinPlayer()
+    let testFriend = TestFriend()
 
     private init() {
         sync.state = self
@@ -143,8 +144,8 @@ final class AppState: ObservableObject {
     }
 
     var peersText: String {
-        if isTestMode { return "· solo, nothing is synced" }
         let others = max(0, peerCount - 1)
+        if isTestMode { return others > 0 ? "· simulated friend" : "· connecting…" }
         if others == 0 { return "· waiting…" }
         return "· \(others) friend\(others > 1 ? "s" : "")"
     }
@@ -200,17 +201,30 @@ final class AppState: ObservableObject {
         applyPlayerChoice()
     }
 
+    /// Test Zone hosts a real room and joins a simulated friend to it, so the
+    /// network, the player control and the menu bar icon all get exercised
+    /// without needing a second person.
     func enterTestZone() {
+        do {
+            try sync.startHosting()
+        } catch {
+            showToast("Couldn't start test mode: \(error.localizedDescription)")
+            return
+        }
         isTestMode = true
         inRoom = true
+        disconnected = false
         statusLabel = "Test mode"
-        playerChoice = .builtin
         startDetecting()
+        // Prefer a player you already have open; otherwise use Sofa's own.
+        playerChoice = detectedSources.first ?? .builtin
         applyPlayerChoice()
-        builtin.loadDemo()
+        if playerChoice == .builtin { builtin.loadDemo() }
+        testFriend.join()
     }
 
     func leaveRoom() {
+        testFriend.leave()
         sync.stop()
         PlayerBridge.shared.stop()
         builtin.reset()

@@ -197,7 +197,7 @@ final class SyncEngine {
 
     /// Send a message to the room (stamped with our id and timestamp).
     func send(_ message: SyncMessage) {
-        guard let state, state.inRoom, !state.isTestMode else { return }
+        guard let state, state.inRoom else { return }
         var msg = message
         msg.from = String(myId)
         msg.sentAt = Date().timeIntervalSince1970 * 1000

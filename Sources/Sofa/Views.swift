@@ -182,6 +182,9 @@ struct RoomView: View {
                 if state.isHosting && !state.inviteLink.isEmpty {
                     InviteCard()
                 }
+                if state.isTestMode {
+                    TestFriendCard()
+                }
                 PlayerCard()
                 if state.playerChoice == .builtin {
                     BuiltinStage()
@@ -444,6 +447,26 @@ struct SourceRow: View {
     }
 }
 
+/// AppKit's AVPlayerView rather than SwiftUI's `VideoPlayer`: the latter's
+/// _AVKit_SwiftUI overlay fails to build its generic metadata at runtime here
+/// and aborts the process (EXC_CRASH in getSuperclassMetadata) the moment a
+/// video is shown.
+struct PlayerView: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.player = player
+        view.controlsStyle = .inline
+        view.videoGravity = .resizeAspect
+        return view
+    }
+
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        if view.player !== player { view.player = player }
+    }
+}
+
 struct BuiltinStage: View {
     @ObservedObject var state = AppState.shared
     @ObservedObject var builtin = AppState.shared.builtin
@@ -451,7 +474,7 @@ struct BuiltinStage: View {
     var body: some View {
         Group {
             if builtin.hasMedia {
-                VideoPlayer(player: builtin.player)
+                PlayerView(player: builtin.player)
                     .frame(height: 210)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
             } else {
@@ -486,6 +509,44 @@ struct BuiltinStage: View {
         if panel.runModal() == .OK, let url = panel.url {
             state.builtin.load(url: url)
         }
+    }
+}
+
+/// Test Zone's fake second person: press these and your real player should
+/// obey, exactly as if a friend on another Mac had pressed them.
+struct TestFriendCard: View {
+    @ObservedObject var state = AppState.shared
+    @ObservedObject var friend = AppState.shared.testFriend
+
+    var body: some View {
+        Card {
+            HStack(spacing: 6) {
+                SectionLabel(text: "Simulated friend")
+                Circle()
+                    .fill(friend.connected ? Color.green : Color.orange)
+                    .frame(width: 6, height: 6)
+            }
+            Text(friend.connected
+                 ? "Press these as if your friend did — your \(state.playerChoice.shortLabel) should follow."
+                 : "Connecting the simulated friend…")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 6) {
+                Button("▶ Play") { friend.pressPlay() }.sofaGlassButton()
+                Button("⏸ Pause") { friend.pressPause() }.sofaGlassButton()
+            }
+            HStack(spacing: 6) {
+                Button("↩ Back 15s") { friend.skip(by: -15) }.sofaGlassButton()
+                Button("↪ Skip 30s") { friend.skip(by: 30) }.sofaGlassButton()
+            }
+            .disabled(!friend.connected)
+
+            Text("The menu bar icon turns into a 2-seat sofa while the friend is in the room.")
+                .font(.system(size: 11)).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .opacity(friend.connected ? 1 : 0.7)
     }
 }
 
