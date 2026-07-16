@@ -33,9 +33,9 @@ final class PlayerBridge {
 
     private static var browserGetJS: String {
         "(function(){\(jsHelpers)" +
-        "var v=bv();" +
-        "if(onNF){var p=nfp();if(p)return (p.getCurrentTime()/1000)+'|'+(v?String(!v.paused):'false')}" +
-        "return v?v.currentTime+'|'+(!v.paused):'none'})()"
+        "var v=bv();var t=document.title||'';" +
+        "if(onNF){var p=nfp();if(p)return (p.getCurrentTime()/1000)+'|'+(v?String(!v.paused):'false')+'|'+t}" +
+        "return v?v.currentTime+'|'+(!v.paused)+'|'+t:'none'})()"
     }
 
     private static func browserCmdJS(_ cmd: String) -> String {
@@ -52,6 +52,22 @@ final class PlayerBridge {
         "var v=bv();if(v)v.currentTime=\(secs)})()"
     }
 
+    /// TV, Music and Spotify share iTunes' scripting vocabulary.
+    private static func trackScript(app: String) -> String {
+        """
+        tell application "\(app)"
+            set t to ""
+            try
+                set t to name of current track
+                try
+                    set t to t & " — " & (artist of current track)
+                end try
+            end try
+            return (player position as text) & "|" & ((player state is playing) as text) & "|" & t
+        end tell
+        """
+    }
+
     private static func chromeAS(_ js: String) -> String {
         "tell application \"Google Chrome\" to return execute active tab of front window javascript \"\(js)\""
     }
@@ -65,19 +81,28 @@ final class PlayerBridge {
             return """
             tell application "QuickTime Player"
                 if (count documents) is 0 then return "none"
-                return (current time of document 1 as text) & "|" & ((rate of document 1 > 0) as text)
+                set t to ""
+                try
+                    set t to name of document 1
+                end try
+                return (current time of document 1 as text) & "|" & ((rate of document 1 > 0) as text) & "|" & t
             end tell
             """
         case .vlc:
-            return "tell application \"VLC\" to return (current time as text) & \"|\" & (playing as text)"
-        case .appleTV:
-            return "tell application \"TV\" to return (player position as text) & \"|\" & ((player state is playing) as text)"
+            return """
+            tell application "VLC"
+                set t to ""
+                try
+                    set t to name of current item
+                end try
+                return (current time as text) & "|" & (playing as text) & "|" & t
+            end tell
+            """
+        case .appleTV: return Self.trackScript(app: "TV")
         case .chrome: return Self.chromeAS(Self.browserGetJS)
         case .safari: return Self.safariAS(Self.browserGetJS)
-        case .music:
-            return "tell application \"Music\" to return (player position as text) & \"|\" & ((player state is playing) as text)"
-        case .spotify:
-            return "tell application \"Spotify\" to return (player position as text) & \"|\" & ((player state is playing) as text)"
+        case .music: return Self.trackScript(app: "Music")
+        case .spotify: return Self.trackScript(app: "Spotify")
         case .builtin: return ""
         }
     }
@@ -208,7 +233,9 @@ final class PlayerBridge {
             return
         }
 
-        let parts = out.split(separator: "|")
+        // "time|playing|title" — split with a limit so a title containing a
+        // pipe (some pages do) doesn't corrupt the parse.
+        let parts = out.split(separator: "|", maxSplits: 2, omittingEmptySubsequences: false)
         guard parts.count >= 2,
               let time = Double(parts[0].replacingOccurrences(of: ",", with: ".")) else {
             state.extLive = .nothingOpen
@@ -217,6 +244,11 @@ final class PlayerBridge {
         }
         let playing = parts[1].trimmingCharacters(in: .whitespaces) == "true"
         state.extLive = .playing(time: time, isPlaying: playing)
+
+        let title = parts.count >= 3
+            ? String(parts[2]).trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+        updateNowPlaying(title, state: state)
 
         let now = Date()
         if let last = lastState, now >= suppressUntil {
@@ -232,6 +264,16 @@ final class PlayerBridge {
             }
         }
         lastState = (time, playing, now)
+    }
+
+    /// Publishes the title locally and tells the room, but only when it
+    /// actually changes — the poll runs every 0.7s.
+    @MainActor
+    private func updateNowPlaying(_ title: String, state: AppState) {
+        let clean = title.isEmpty ? nil : title
+        guard clean != state.nowPlaying else { return }
+        state.nowPlaying = clean
+        if let clean { state.sync.send(SyncMessage(type: "loaded", name: clean)) }
     }
 
     // MARK: - Applying remote commands

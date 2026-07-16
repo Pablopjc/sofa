@@ -296,13 +296,34 @@ struct PlayerCard: View {
                 SourceRow(
                     player: player,
                     selected: state.playerChoice == player,
-                    live: state.playerChoice == player ? state.extLive : nil
+                    live: state.playerChoice == player ? state.extLive : nil,
+                    title: state.playerChoice == player ? state.nowPlaying : nil
                 ) { state.selectPlayer(player) }
             }
 
             // The built-in player is always available.
-            SourceRow(player: .builtin, selected: state.playerChoice == .builtin, live: nil) {
-                state.selectPlayer(.builtin)
+            SourceRow(
+                player: .builtin,
+                selected: state.playerChoice == .builtin,
+                live: nil,
+                title: state.playerChoice == .builtin ? state.builtin.mediaName : nil
+            ) { state.selectPlayer(.builtin) }
+
+            // What the other side is watching, straight from their broadcast.
+            if let friendTitle = state.friendNowPlaying {
+                Divider().opacity(0.4)
+                HStack(spacing: 8) {
+                    Image(systemName: "sofa.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Your friend is watching")
+                            .font(.system(size: 10)).foregroundStyle(.tertiary)
+                        Text(friendTitle)
+                            .font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
+                    }
+                    Spacer(minLength: 0)
+                }
             }
 
             if state.detectedSources.isEmpty {
@@ -380,6 +401,8 @@ struct SourceRow: View {
     let player: PlayerChoice
     let selected: Bool
     let live: ExtLiveState?
+    /// What's actually playing in this app, when we know it.
+    var title: String?
     let action: () -> Void
 
     var body: some View {
@@ -387,13 +410,25 @@ struct SourceRow: View {
             HStack(spacing: 10) {
                 icon.frame(width: 28, height: 28)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(player.shortLabel)
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(.primary)
-                    Text(statusText)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(statusIsWarning ? .orange : .secondary)
-                        .lineLimit(1)
+                    // Now Playing style: the title leads, the app is metadata.
+                    if let title, !title.isEmpty {
+                        Text(title)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1).truncationMode(.tail)
+                        Text("\(player.shortLabel) · \(statusText)")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(statusIsWarning ? .orange : .secondary)
+                            .lineLimit(1)
+                    } else {
+                        Text(player.shortLabel)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.primary)
+                        Text(statusText)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(statusIsWarning ? .orange : .secondary)
+                            .lineLimit(1)
+                    }
                 }
                 Spacer(minLength: 4)
                 if selected {

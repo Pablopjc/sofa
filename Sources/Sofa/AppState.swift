@@ -103,6 +103,9 @@ final class AppState: ObservableObject {
     // Player
     @Published var playerChoice: PlayerChoice = .quicktime
     @Published var extLive: ExtLiveState = .searching
+    /// What's playing here, and what our friend says is playing on their side.
+    @Published var nowPlaying: String?
+    @Published var friendNowPlaying: String?
 
     // Auto-detected active players (running apps), refreshed while in a room.
     @Published var detectedSources: [PlayerChoice] = []
@@ -240,6 +243,8 @@ final class AppState: ObservableObject {
         detectedSources = []
         unsupportedNotice = nil
         detectedCallApp = nil
+        nowPlaying = nil
+        friendNowPlaying = nil
     }
 
     // MARK: - Active source detection
@@ -305,6 +310,7 @@ final class AppState: ObservableObject {
         } else {
             builtin.pauseAndUnload()
             extLive = .searching
+            nowPlaying = nil
             mediaActive = true
             PlayerBridge.shared.start(player: playerChoice)
         }

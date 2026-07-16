@@ -216,7 +216,11 @@ final class SyncEngine {
             case "peers":
                 state.peerCount = msg.count ?? 0
             case "loaded":
-                state.showToast("Your friend loaded “\(msg.name ?? "media")”")
+                let name = msg.name ?? "media"
+                if state.friendNowPlaying != name {
+                    state.friendNowPlaying = name
+                    state.showToast("Your friend is watching “\(name)”")
+                }
             case "play", "pause", "seek", "tick":
                 if state.playerChoice != .builtin {
                     PlayerBridge.shared.applyRemote(msg)
