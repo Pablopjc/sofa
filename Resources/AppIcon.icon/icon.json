@@ -1,0 +1,29 @@
+{
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "sofa-light.png",
+          "name": "sofa-light",
+          "glass": false,
+          "hidden-specializations": [
+            { "value": false },
+            { "appearance": "dark", "value": true }
+          ]
+        },
+        {
+          "image-name": "sofa-dark.png",
+          "name": "sofa-dark",
+          "glass": false,
+          "hidden-specializations": [
+            { "value": true },
+            { "appearance": "dark", "value": false }
+          ]
+        }
+      ]
+    }
+  ],
+  "supported-platforms": {
+    "squares": ["macOS"]
+  }
+}
