@@ -15,8 +15,33 @@ The Electron original lives in `../Sofa` and is installed as **Sofa Legacy.app**
 ## Build
 
 ```bash
-./build.sh          # → dist/Sofa.app
+./build.sh          # → dist/Sofa.app (universal: arm64 + x86_64)
 ```
+
+## Releasing a new version
+
+Sofa's **Check for Updates…** (⋯ menu in the panel) reads the latest GitHub
+release of the repo named in `Info.plist` → `SofaUpdateRepo`.
+
+One-time setup:
+
+```bash
+gh auth login                      # sign in to GitHub
+gh repo create sofa --public --source=. --remote=origin --push
+```
+
+Then, for every new version:
+
+```bash
+./release.sh 2.1.0 "Apple TV support and faster sync"
+```
+
+That bumps the version in `Info.plist`, builds a universal `.app`, zips it,
+commits, and publishes the GitHub release with the zip attached. Everyone's
+**Check for Updates…** picks it up immediately.
+
+The repo must be **public** — a private one would need an API token baked into
+the app for the update check to work.
 
 Requires Xcode command line tools (Swift 6+). If Xcode 26+ is installed, the build embeds the adaptive light/dark icon via `actool`; otherwise it falls back to the classic `.icns`.
 

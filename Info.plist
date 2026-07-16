@@ -2,38 +2,22 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleDisplayName</key>
+	<string>Sofa</string>
 	<key>CFBundleExecutable</key>
 	<string>Sofa</string>
+	<key>CFBundleIconFile</key>
+	<string>icon.icns</string>
+	<key>CFBundleIconName</key>
+	<string>Icon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.pablo.sofa.native</string>
 	<key>CFBundleName</key>
-	<string>Sofa</string>
-	<key>CFBundleDisplayName</key>
 	<string>Sofa</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>2.0.0</string>
-	<key>CFBundleVersion</key>
-	<string>2.0.0</string>
-	<key>LSMinimumSystemVersion</key>
-	<string>14.0</string>
-	<key>LSUIElement</key>
-	<true/>
-	<key>NSPrincipalClass</key>
-	<string>NSApplication</string>
-	<key>CFBundleIconFile</key>
-	<string>icon.icns</string>
-	<key>CFBundleIconName</key>
-	<string>Icon</string>
-	<key>LSApplicationCategoryType</key>
-	<string>public.app-category.entertainment</string>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>Sofa controls your media player (QuickTime, VLC, Music, Spotify, your browser) to keep playback in sync with your friends.</string>
-	<key>NSHumanReadableCopyright</key>
-	<string>© 2026 Pablo</string>
-	<key>SofaUpdateRepo</key>
-	<string>OWNER/REPO</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -45,5 +29,21 @@
 			</array>
 		</dict>
 	</array>
+	<key>CFBundleVersion</key>
+	<string>2.0.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.entertainment</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Sofa controls your media player (QuickTime, VLC, Music, Spotify, your browser) to keep playback in sync with your friends.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Pablo</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>SofaUpdateRepo</key>
+	<string>Pablopjc/sofa</string>
 </dict>
 </plist>
