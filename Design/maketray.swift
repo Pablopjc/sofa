@@ -8,7 +8,11 @@ import AppKit
 // bakes in ~17% padding. Rendering both to the same canvas height therefore
 // made the armchair look oversized and the sofa undersized.
 
-let inkHeightPt = 16   // matches the system's own menu bar glyphs
+// Measured from the system's own menu bar symbols, drawn the way an app draws
+// them (NSImage(systemSymbolName:) with no configuration): wifi inks 11pt,
+// battery 9pt, speaker and sofa.fill 12pt. So 12 is sofa.fill at its natural
+// size — anything larger and Sofa shouts next to its neighbours.
+let inkHeightPt = 12
 
 guard CommandLine.arguments.count > 2 else {
     print("usage: maketray.swift <armchair-png-hires> <out-dir>")
