@@ -752,15 +752,15 @@ struct TestFriendCard: View {
     }
 }
 
-/// One-click window layout: movie left, video call right, nothing overlapping.
+/// Theater mode: black curtain, movie as big as it fits, call in a right column.
 struct LayoutCard: View {
     @ObservedObject var state = AppState.shared
 
     var body: some View {
         Card {
-            SectionLabel(text: "On a call?")
+            SectionLabel(text: "Theater")
             HStack(spacing: 10) {
-                LayoutDiagram()
+                TheaterDiagram()
                 VStack(alignment: .leading, spacing: 2) {
                     Text(headline)
                         .font(.system(size: 12.5, weight: .medium))
@@ -771,43 +771,47 @@ struct LayoutCard: View {
                 }
                 Spacer(minLength: 0)
             }
-            Button("Arrange Windows") { state.arrangeWindows() }
-                .sofaGlassButton()
-                .disabled(state.detectedCallApp == nil || state.playerChoice == .builtin)
+            Button(state.theaterActive ? "Exit Theater" : "Enter Theater") {
+                state.toggleTheater()
+            }
+            .sofaGlassButton()
+            .disabled(!state.theaterActive && (state.detectedCallApp == nil || state.playerChoice == .builtin))
         }
     }
 
     private var headline: String {
-        if let call = state.detectedCallApp {
-            return "\(call.name) call detected"
-        }
+        if state.theaterActive { return "Theater is on" }
+        if let call = state.detectedCallApp { return "\(call.name) call detected" }
         return "No call detected"
     }
 
     private var subline: String {
+        if state.theaterActive {
+            return "Everything else is behind the curtain. Exit to get your desktop back."
+        }
         if state.playerChoice == .builtin {
-            return "Arranging needs an external player like QuickTime or your browser."
+            return "Theater needs an external player like QuickTime or your browser."
         }
         if state.detectedCallApp != nil {
-            return "Puts your movie on the left, as big as it fits, and the call in a column on the right — no overlap."
+            return "Blacks out the desktop: just your movie, as big as it fits, with the call beside it."
         }
-        return "Start a FaceTime, Zoom, Discord, Teams or WhatsApp call and Sofa can lay the windows out for you."
+        return "Start a FaceTime, Zoom, Discord, Teams or WhatsApp call, then dim everything but the movie and the call."
     }
 }
 
-/// Tiny picture of what Arrange does: wide video left, small call right.
-struct LayoutDiagram: View {
+/// Tiny picture of Theater: black stage, wide movie, small call column.
+struct TheaterDiagram: View {
     var body: some View {
         HStack(spacing: 2) {
             RoundedRectangle(cornerRadius: 2)
-                .fill(Color.accentColor.opacity(0.55))
+                .fill(Color.accentColor.opacity(0.8))
                 .frame(width: 30, height: 26)
             RoundedRectangle(cornerRadius: 2)
-                .fill(Color.primary.opacity(0.25))
+                .fill(Color.white.opacity(0.35))
                 .frame(width: 9, height: 14)
         }
-        .padding(3)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 4))
+        .padding(4)
+        .background(Color.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 5))
     }
 }
 

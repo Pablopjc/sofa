@@ -111,6 +111,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         NotificationCenter.default.addObserver(
+            forName: .sofaHidePanel, object: nil, queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.async { self?.panel.orderOut(nil) }
+        }
+
+        NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: panel, queue: .main
         ) { _ in
             // Behave like a popover: hide on blur unless media is loaded/playing.

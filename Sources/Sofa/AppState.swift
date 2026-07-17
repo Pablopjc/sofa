@@ -2,6 +2,11 @@ import AppKit
 import Combine
 import Foundation
 
+extension Notification.Name {
+    /// Asks the app delegate to hide the menu bar panel (eg. entering Theater).
+    static let sofaHidePanel = Notification.Name("SofaHidePanel")
+}
+
 /// Which player Sofa is syncing.
 enum PlayerChoice: String, CaseIterable, Identifiable {
     case quicktime, vlc, appleTV, chrome, safari, music, spotify, builtin
@@ -277,6 +282,7 @@ final class AppState: ObservableObject {
     }
 
     func leaveRoom() {
+        if theaterActive { WindowArranger.exitTheater(); theaterActive = false }
         testFriend.leave()
         sync.stop()
         PlayerBridge.shared.stop()
@@ -326,25 +332,36 @@ final class AppState: ObservableObject {
 
     // MARK: - Window layout
 
-    /// Arranges the movie and the call side by side, prompting for the
-    /// Accessibility permission the first time.
-    func arrangeWindows() {
+    /// Whether the black-curtain theater layout is currently up.
+    @Published var theaterActive = false
+
+    /// Toggles Theater mode: black backdrop over everything, the movie filling
+    /// the screen up to a call column on the right. Prompts for Accessibility
+    /// permission the first time.
+    func toggleTheater() {
+        if theaterActive {
+            WindowArranger.exitTheater()
+            theaterActive = false
+            return
+        }
         guard let call = detectedCallApp else {
             showToast("No video call found — start your FaceTime call first.")
             return
         }
         guard playerChoice != .builtin else {
-            showToast("Arranging works with an external player, not Sofa’s own.")
+            showToast("Theater works with an external player, not Sofa’s own.")
             return
         }
         guard WindowArranger.hasAccessibilityPermission else {
             WindowArranger.requestAccessibilityPermission()
-            showToast("Allow Sofa in Accessibility, then press Arrange again.")
+            showToast("Allow Sofa in Accessibility, then press the button again.")
             return
         }
         do {
-            try WindowArranger.arrange(player: playerChoice, callApp: call)
-            showToast("Arranged: \(playerChoice.shortLabel) left, \(call.name) right.")
+            try WindowArranger.enterTheater(player: playerChoice, callApp: call)
+            theaterActive = true
+            // The panel itself is a distraction on black — tuck it away.
+            NotificationCenter.default.post(name: .sofaHidePanel, object: nil)
         } catch {
             showToast(error.localizedDescription)
         }

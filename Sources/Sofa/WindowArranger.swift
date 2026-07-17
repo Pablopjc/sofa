@@ -79,11 +79,12 @@ enum WindowArranger {
     /// Width reserved on the right for the call, and the gap between windows.
     private static let callWidth: CGFloat = 320
     private static let callHeight: CGFloat = 420
-    private static let gap: CGFloat = 8
+    private static let gap: CGFloat = 12
 
-    /// Puts the player on the left (as large as the space allows) and the call
-    /// in a column on the right. Nothing overlaps.
-    static func arrange(player: PlayerChoice, callApp: CallApp) throws {
+    /// Theater mode: a black backdrop covers the whole screen so nothing but
+    /// the movie and the call is visible — the movie fills everything left of
+    /// the call column, the call floats on black, and the desktop disappears.
+    static func enterTheater(player: PlayerChoice, callApp: CallApp) throws {
         guard hasAccessibilityPermission else { throw ArrangeError.noPermission }
         guard let screen = NSScreen.main else { throw ArrangeError.noScreen }
 
@@ -95,10 +96,10 @@ enum WindowArranger {
         let usableW = visible.width
         let usableH = visible.height
 
-        let videoW = usableW - callWidth - gap
-        let videoRect = CGRect(x: left, y: top, width: videoW, height: usableH)
+        // Movie: flush to the left edge, full height, up to the call column.
+        let videoRect = CGRect(x: left, y: top, width: usableW - callWidth - gap, height: usableH)
 
-        // Call sits in the right column, vertically centred.
+        // Call: right column, vertically centred, floating on black.
         let callRect = CGRect(
             x: left + usableW - callWidth,
             y: top + (usableH - callHeight) / 2,
@@ -116,10 +117,66 @@ enum WindowArranger {
 
         setFrame(playerWindow, videoRect)
         setFrame(callWindow, callRect)
+
+        // Black out everything else, then lift the two stars above the backdrop
+        // (activation raises an app's windows within the same level).
+        TheaterBackdrop.shared.show(on: screen)
+        if let playerApp = NSRunningApplication.runningApplications(withBundleIdentifier: playerBundle).first {
+            playerApp.activate()
+        }
+        if let call = NSRunningApplication.runningApplications(withBundleIdentifier: callApp.bundleID).first {
+            call.activate()
+        }
     }
 
-    // MARK: - Accessibility plumbing
+    static func exitTheater() {
+        TheaterBackdrop.shared.hide()
+    }
 
+    static var theaterActive: Bool { TheaterBackdrop.shared.isActive }
+}
+
+/// The full-screen black curtain behind the movie and the call.
+@MainActor
+final class TheaterBackdrop {
+    static let shared = TheaterBackdrop()
+    private var window: NSWindow?
+
+    var isActive: Bool { window != nil }
+
+    func show(on screen: NSScreen) {
+        hide()
+        let w = NSWindow(contentRect: screen.frame, styleMask: .borderless,
+                         backing: .buffered, defer: false)
+        w.backgroundColor = .black
+        w.isOpaque = true
+        w.hasShadow = false
+        w.level = .normal
+        w.collectionBehavior = [.fullScreenAuxiliary, .stationary]
+        w.isReleasedWhenClosed = false
+
+        // A whisper of a hint, bottom-left on the black.
+        let hint = NSTextField(labelWithString: "Theater — open Sofa in the menu bar to exit")
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = NSColor.white.withAlphaComponent(0.22)
+        hint.sizeToFit()
+        hint.frame.origin = NSPoint(x: 20, y: 16)
+        w.contentView?.addSubview(hint)
+
+        w.orderFront(nil)
+        window = w
+    }
+
+    func hide() {
+        window?.orderOut(nil)
+        window = nil
+    }
+}
+
+// MARK: - Accessibility plumbing
+
+@MainActor
+extension WindowArranger {
     private static func frontWindow(ofBundleID bundleID: String) -> AXUIElement? {
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
         else { return nil }
