@@ -9,6 +9,7 @@ struct SyncMessage {
     var playing: Bool?
     var name: String?
     var art: String?      // poster / artwork URL
+    var token: String?    // room secret, presented in "hello"
     var count: Int?
     var from: String?
     var sentAt: Double?   // ms since epoch
@@ -24,6 +25,7 @@ struct SyncMessage {
         if let playing { dict["playing"] = playing }
         if let name { dict["name"] = name }
         if let art { dict["art"] = art }
+        if let token { dict["token"] = token }
         if let count { dict["count"] = count }
         if let from { dict["from"] = from }
         if let sentAt { dict["sentAt"] = sentAt }
@@ -39,6 +41,7 @@ struct SyncMessage {
             playing: obj["playing"] as? Bool,
             name: obj["name"] as? String,
             art: obj["art"] as? String,
+            token: obj["token"] as? String,
             count: (obj["count"] as? NSNumber)?.intValue,
             from: obj["from"] as? String,
             sentAt: (obj["sentAt"] as? NSNumber)?.doubleValue
@@ -48,24 +51,42 @@ struct SyncMessage {
 
 /// Hosts the relay (when hosting) and holds the client connection to the room.
 /// The host also connects to its own relay, exactly like the legacy app.
+///
+/// Security: joining requires the room's secret. The invite link carries it
+/// (sofa://join/host:port/SECRET); a peer's first message must be a "hello"
+/// with the right token or the relay drops the connection — so knowing the IP
+/// and port (eg. a port scan of the Wi-Fi) is no longer enough to get in.
 @MainActor
 final class SyncEngine {
     static let port: UInt16 = 7420
 
     weak var state: AppState?
-    private let myId = UUID().uuidString.prefix(8).lowercased()
+    let myId = UUID().uuidString.prefix(8).lowercased()
 
     private var listener: NWListener?
     private var serverPeers: [NWConnection] = []
+    private var authedPeers = Set<ObjectIdentifier>()
     private var client: NWConnection?
+    private var awaitingWelcome: ConnectTracker?
+    private var presenceTimer: Timer?
+
+    /// The room secret: generated when hosting, taken from the link when joining.
+    private(set) var roomToken: String?
+
+    /// Unambiguous alphabet (no 0/O or 1/I) — the code may be read out loud.
+    static func generateToken() -> String {
+        let alphabet = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+        return String((0..<6).map { _ in alphabet.randomElement()! })
+    }
 
     // MARK: - Hosting (relay)
 
     func startHosting() throws {
-        guard listener == nil else {
+        if listener != nil {
             connectToSelf()
             return
         }
+        roomToken = Self.generateToken()
         let params = NWParameters.tcp
         let ws = NWProtocolWebSocket.Options()
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
@@ -79,7 +100,7 @@ final class SyncEngine {
     }
 
     private func connectToSelf() {
-        connect(to: "127.0.0.1:\(Self.port)") { _ in }
+        connect(to: "127.0.0.1:\(Self.port)", token: roomToken) { _ in }
     }
 
     private func acceptPeer(_ conn: NWConnection) {
@@ -90,45 +111,74 @@ final class SyncEngine {
                 switch st {
                 case .failed, .cancelled:
                     self.serverPeers.removeAll { $0 === conn }
+                    self.authedPeers.remove(ObjectIdentifier(conn))
                     self.broadcastPeerCount()
                 default: break
                 }
             }
         }
-        receiveLoop(on: conn) { [weak self] data in
-            // Relay every message to all other peers
+        receiveLoop(on: conn) { [weak self, weak conn] data in
             Task { @MainActor in
-                guard let self else { return }
-                for peer in self.serverPeers where peer !== conn {
-                    self.send(data: data, over: peer)
-                }
+                guard let self, let conn else { return }
+                self.relayIncoming(data, from: conn)
             }
         }
         conn.start(queue: .main)
-        // Give the WebSocket handshake a beat before announcing the count.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.broadcastPeerCount()
+        // A peer that hasn't authenticated within 5s is dropped.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self, weak conn] in
+            guard let self, let conn else { return }
+            if !self.authedPeers.contains(ObjectIdentifier(conn)) {
+                conn.cancel()
+            }
+        }
+    }
+
+    /// Relay-side routing: gate on the room token, then forward to the others.
+    private func relayIncoming(_ data: Data, from conn: NWConnection) {
+        let id = ObjectIdentifier(conn)
+
+        if !authedPeers.contains(id) {
+            // First message must be a hello with the right secret.
+            guard let msg = SyncMessage.decode(data), msg.type == "hello",
+                  let token = msg.token, token == roomToken else {
+                conn.cancel()
+                return
+            }
+            authedPeers.insert(id)
+            if let welcome = SyncMessage(type: "welcome").encoded() {
+                send(data: welcome, over: conn)
+            }
+            broadcastPeerCount()
+            // Fall through: relay the hello so existing peers learn the name.
+        }
+
+        for peer in serverPeers where peer !== conn && authedPeers.contains(ObjectIdentifier(peer)) {
+            send(data: data, over: peer)
         }
     }
 
     private func broadcastPeerCount() {
-        let msg = SyncMessage(type: "peers", count: serverPeers.count)
+        let msg = SyncMessage(type: "peers", count: authedPeers.count)
         guard let data = msg.encoded() else { return }
-        for peer in serverPeers {
+        for peer in serverPeers where authedPeers.contains(ObjectIdentifier(peer)) {
             send(data: data, over: peer)
         }
     }
 
     // MARK: - Client
 
-    func connect(to address: String, completion: @escaping (Bool) -> Void) {
+    /// Connects and authenticates. `completion(true)` only fires once the host
+    /// has accepted our room secret (the "welcome") — a wrong or missing code
+    /// looks like a failed join, not a half-open room.
+    func connect(to address: String, token: String?, completion: @escaping (Bool) -> Void) {
         let parts = address.split(separator: ":")
         let host = String(parts.first ?? "")
         let port = parts.count > 1 ? UInt16(parts[1]) ?? Self.port : Self.port
-        guard !host.isEmpty, let nwPort = NWEndpoint.Port(rawValue: port) else {
+        guard !host.isEmpty else {
             completion(false)
             return
         }
+        if roomToken == nil { roomToken = token }
 
         let params = NWParameters.tcp
         let ws = NWProtocolWebSocket.Options()
@@ -140,21 +190,25 @@ final class SyncEngine {
             completion(false)
             return
         }
-        _ = nwPort
         let conn = NWConnection(to: .url(wsURL), using: params)
 
         let tracker = ConnectTracker(completion: completion)
+        awaitingWelcome = tracker
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak conn] in
             if tracker.finish(false) { conn?.cancel() }
         }
 
         conn.stateUpdateHandler = { [weak self] st in
             Task { @MainActor in
+                guard let self else { return }
                 switch st {
                 case .ready:
-                    _ = tracker.finish(true)
+                    // Introduce ourselves; the welcome (or the 6s timeout) decides.
+                    self.sendRaw(SyncMessage(type: "hello",
+                                             name: self.state?.displayName,
+                                             token: token ?? self.roomToken))
                 case .failed, .cancelled:
-                    if !tracker.finish(false) { self?.handleDisconnect() }
+                    if !tracker.finish(false) { self.handleDisconnect() }
                 default: break
                 }
             }
@@ -167,6 +221,18 @@ final class SyncEngine {
         conn.start(queue: .main)
     }
 
+    /// Periodic presence: keeps names fresh and lets stale friends expire.
+    func startPresence() {
+        presenceTimer?.invalidate()
+        presenceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let state = self.state, state.inRoom else { return }
+                self.sendRaw(SyncMessage(type: "hello", name: state.displayName, token: self.roomToken))
+                state.pruneFriends(olderThan: 16)
+            }
+        }
+    }
+
     private func handleDisconnect() {
         guard let state, state.inRoom else { return }
         state.disconnected = true
@@ -175,10 +241,15 @@ final class SyncEngine {
     }
 
     func stop() {
+        sendRaw(SyncMessage(type: "bye"))
+        presenceTimer?.invalidate(); presenceTimer = nil
+        awaitingWelcome = nil
         client?.cancel(); client = nil
         for p in serverPeers { p.cancel() }
         serverPeers = []
+        authedPeers = []
         listener?.cancel(); listener = nil
+        roomToken = nil
     }
 
     // MARK: - Message plumbing
@@ -201,6 +272,11 @@ final class SyncEngine {
     /// Send a message to the room (stamped with our id and timestamp).
     func send(_ message: SyncMessage) {
         guard let state, state.inRoom else { return }
+        sendRaw(message)
+    }
+
+    /// Like send(), but also usable during the handshake (before inRoom).
+    private func sendRaw(_ message: SyncMessage) {
         var msg = message
         msg.from = String(myId)
         msg.sentAt = Date().timeIntervalSince1970 * 1000
@@ -216,6 +292,20 @@ final class SyncEngine {
         guard let state = self.state else { return }
         do {
             switch msg.type {
+            case "welcome":
+                _ = awaitingWelcome?.finish(true)
+                awaitingWelcome = nil
+                startPresence()
+            case "hello":
+                if let id = msg.from {
+                    let isNew = state.upsertFriend(id: id, name: msg.name ?? "Friend")
+                    // Introduce ourselves back so latecomers learn our name too.
+                    if isNew {
+                        sendRaw(SyncMessage(type: "hello", name: state.displayName, token: roomToken))
+                    }
+                }
+            case "bye":
+                if let id = msg.from { state.removeFriend(id: id) }
             case "peers":
                 state.peerCount = msg.count ?? 0
             case "loaded":

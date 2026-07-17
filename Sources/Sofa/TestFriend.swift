@@ -27,8 +27,11 @@ final class TestFriend: ObservableObject {
         return lastKnownTime + Date().timeIntervalSince(lastHeardAt)
     }
 
-    func join() {
+    private var roomToken: String?
+
+    func join(token: String?) {
         let port = SyncEngine.port
+        roomToken = token
         leave()
         let params = NWParameters.tcp
         params.defaultProtocolStack.applicationProtocols.insert(NWProtocolWebSocket.Options(), at: 0)
@@ -37,9 +40,13 @@ final class TestFriend: ObservableObject {
 
         conn.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
+                guard let self else { return }
                 switch state {
-                case .ready: self?.connected = true
-                case .failed, .cancelled: self?.connected = false
+                case .ready:
+                    self.connected = true
+                    // Authenticate and introduce ourselves like a real friend.
+                    self.send(SyncMessage(type: "hello", name: "Test Friend", token: self.roomToken))
+                case .failed, .cancelled: self.connected = false
                 default: break
                 }
             }

@@ -124,6 +124,14 @@ struct IdleView: View {
                 .multilineTextAlignment(.center)
                 .padding(.vertical, 8)
 
+            HStack(spacing: 8) {
+                Text("Your name")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                TextField("Your name", text: $state.displayName)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 160)
+            }
+
             Button {
                 state.hostRoom()
             } label: {
@@ -233,6 +241,21 @@ struct InviteCard: View {
     var body: some View {
         Card {
             SectionLabel(text: "Invite friends")
+
+            // Who's here right now, by name.
+            if !state.friends.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "person.2.fill")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                    ForEach(state.friends) { friend in
+                        Text(friend.name)
+                            .font(.system(size: 11, weight: .medium))
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(Color.accentColor.opacity(0.15), in: Capsule())
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
             Text(state.inviteLink)
                 .font(.system(size: 12, design: .monospaced))
                 .lineLimit(1).truncationMode(.middle)
@@ -251,7 +274,7 @@ struct InviteCard: View {
                 ShareButton(link: state.inviteLink)
                     .frame(maxWidth: .infinity)
             }
-            Text("Same Wi-Fi works out of the box. On different networks, use Tailscale or forward port 7420.")
+            Text("The link includes this party’s secret code — only people you share it with can join. Same Wi-Fi works out of the box; on different networks, use Tailscale or forward port 7420.")
                 .font(.system(size: 11)).foregroundStyle(.tertiary)
         }
     }

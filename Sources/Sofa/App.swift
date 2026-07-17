@@ -232,11 +232,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - sofa:// links
 
     private func handleInvite(urlString: String) {
-        let host = AppState.parseTarget(urlString)
-        guard !host.isEmpty else { return }
+        // Pass the raw link through: join() parses out address and room code.
+        guard !AppState.parseTarget(urlString).address.isEmpty else { return }
 
         if panel == nil {
-            pendingJoin = host // app still launching
+            pendingJoin = urlString // app still launching
             return
         }
         showPanel()
@@ -244,8 +244,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if state.inRoom {
             state.showToast("Already in a party — leave it first to join another.")
         } else {
-            state.joinAddress = host
-            state.join(target: host)
+            state.joinAddress = urlString
+            state.join(target: urlString)
         }
     }
 

@@ -88,6 +88,21 @@ enum ExtLiveState: Equatable {
 final class AppState: ObservableObject {
     static let shared = AppState()
 
+    /// Your name, shown to friends in the room. Persisted across launches.
+    @Published var displayName: String = UserDefaults.standard.string(forKey: "SofaDisplayName")
+        ?? NSFullUserName().components(separatedBy: " ").first ?? "Me" {
+        didSet { UserDefaults.standard.set(displayName, forKey: "SofaDisplayName") }
+    }
+
+    /// Friends currently in the room (peer id → name), kept fresh by presence.
+    struct Friend: Identifiable, Equatable {
+        let id: String
+        var name: String
+        var lastSeen: Date
+        static func == (a: Friend, b: Friend) -> Bool { a.id == b.id && a.name == b.name }
+    }
+    @Published var friends: [Friend] = []
+
     // Room
     @Published var inRoom = false
     @Published var isHosting = false
@@ -140,6 +155,30 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Returns true when this peer wasn't known yet.
+    func upsertFriend(id: String, name: String) -> Bool {
+        if let i = friends.firstIndex(where: { $0.id == id }) {
+            friends[i].name = name
+            friends[i].lastSeen = Date()
+            return false
+        }
+        friends.append(Friend(id: id, name: name, lastSeen: Date()))
+        showToast("\(name) joined the party")
+        return true
+    }
+
+    func removeFriend(id: String) {
+        if let i = friends.firstIndex(where: { $0.id == id }) {
+            let name = friends[i].name
+            friends.remove(at: i)
+            showToast("\(name) left")
+        }
+    }
+
+    func pruneFriends(olderThan seconds: TimeInterval) {
+        friends.removeAll { Date().timeIntervalSince($0.lastSeen) > seconds }
+    }
+
     func showToast(_ text: String) {
         toast = text
         toastTimer?.invalidate()
@@ -149,6 +188,9 @@ final class AppState: ObservableObject {
     }
 
     var peersText: String {
+        if !friends.isEmpty {
+            return "· with " + friends.map(\.name).joined(separator: ", ")
+        }
         let others = max(0, peerCount - 1)
         if isTestMode { return others > 0 ? "· simulated friend" : "· connecting…" }
         if others == 0 { return "· waiting…" }
@@ -161,7 +203,7 @@ final class AppState: ObservableObject {
         do {
             try sync.startHosting()
             let ip = primaryIP()
-            inviteLink = "sofa://join/\(ip):\(SyncEngine.port)"
+            inviteLink = "sofa://join/\(ip):\(SyncEngine.port)/\(sync.roomToken ?? "")"
             isHosting = true
             enterRoom(label: "Hosting")
         } catch {
@@ -171,27 +213,33 @@ final class AppState: ObservableObject {
 
     func join(target: String? = nil) {
         let raw = target ?? joinAddress
-        let addr = Self.parseTarget(raw)
+        let (addr, token) = Self.parseTarget(raw)
         guard !addr.isEmpty else { return }
         joinError = nil
         joining = true
-        sync.connect(to: addr) { [weak self] ok in
+        sync.connect(to: addr, token: token) { [weak self] ok in
             guard let self else { return }
             self.joining = false
             if ok {
                 self.enterRoom(label: "Connected")
+            } else if token == nil {
+                self.joinError = "Could not join. Use the full invite link — it includes the room code."
             } else {
-                self.joinError = "Could not connect. Check the link or address and try again."
+                self.joinError = "Could not connect. Check the link and that your friend's party is still open."
             }
         }
     }
 
-    /// Accept a raw address, a sofa:// link, or anything containing one.
-    static func parseTarget(_ text: String) -> String {
-        if let r = text.range(of: #"sofa://join/([^\s/]+)"#, options: .regularExpression) {
-            return String(text[r]).replacingOccurrences(of: "sofa://join/", with: "")
+    /// Accepts a full sofa:// link or a raw "host:port/CODE" — returns address + room code.
+    static func parseTarget(_ text: String) -> (address: String, token: String?) {
+        var t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let r = t.range(of: #"sofa://join/[^\s]+"#, options: .regularExpression) {
+            t = String(t[r]).replacingOccurrences(of: "sofa://join/", with: "")
         }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = t.split(separator: "/", maxSplits: 1)
+        let addr = String(parts.first ?? "")
+        let token = parts.count > 1 ? String(parts[1]).trimmingCharacters(in: CharacterSet(charactersIn: "/")) : nil
+        return (addr, (token?.isEmpty ?? true) ? nil : token)
     }
 
     private func enterRoom(label: String) {
@@ -225,7 +273,7 @@ final class AppState: ObservableObject {
         playerChoice = detectedSources.first ?? .builtin
         applyPlayerChoice()
         if playerChoice == .builtin { builtin.loadDemo() }
-        testFriend.join()
+        testFriend.join(token: sync.roomToken)
     }
 
     func leaveRoom() {
@@ -249,6 +297,7 @@ final class AppState: ObservableObject {
         nowPlayingPoster = nil
         friendNowPlaying = nil
         friendNowPlayingArt = nil
+        friends = []
     }
 
     // MARK: - Active source detection
