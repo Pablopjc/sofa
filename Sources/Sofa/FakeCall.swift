@@ -23,12 +23,15 @@ final class FakeCall: ObservableObject {
                 backing: .buffered, defer: false
             )
             panel.isFloatingPanel = true
-            panel.level = .floating          // above the theater backdrop
+            // Screen-saver level keeps the call above everything — other apps,
+            // and even a video that goes full-screen (which opens its own Space).
+            panel.level = .screenSaver
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = true
             panel.isMovableByWindowBackground = true
-            panel.collectionBehavior = [.fullScreenAuxiliary]
+            // Ride along to every Space, including a full-screen video's own one.
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             panel.isReleasedWhenClosed = false
             panel.contentView = NSHostingView(rootView: FakeCallView())
             window = panel
