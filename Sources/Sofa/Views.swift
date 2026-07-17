@@ -405,24 +405,44 @@ struct PlayerCard: View {
     }
 }
 
+/// A fixed-size, aspect-filled, rounded thumbnail — like Control Center's.
+/// Draws into its layer so it crops-to-fill and, crucially, reports no
+/// intrinsic size, so the SwiftUI `.frame(28×28)` governs instead of the
+/// image's own (huge) dimensions.
+final class ArtworkView: NSView {
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+    override func makeBackingLayer() -> CALayer {
+        let layer = CALayer()
+        layer.contentsGravity = .resizeAspectFill
+        layer.masksToBounds = true
+        layer.cornerRadius = 6
+        layer.contentsScale = 2
+        return layer
+    }
+    var picture: NSImage? {
+        didSet {
+            layer?.contents = picture?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        }
+    }
+}
+
 /// Downloads and caches a remote image (poster / cover art), showing a fallback
-/// image while it loads or if there's none. Built on NSImageView so it needs no
-/// SwiftUI @State (the macro plugin isn't in the command-line toolchain).
-/// Cached by URL so the 0.7s poll doesn't re-download the same artwork.
+/// image while it loads or if there's none. Built on AppKit (no SwiftUI @State,
+/// whose macro plugin isn't in the command-line toolchain). Cached by URL so
+/// the 0.7s poll doesn't re-download the same artwork.
 struct RemoteImage: NSViewRepresentable {
     let urlString: String?
     let fallback: NSImage?
 
-    func makeNSView(context: Context) -> NSImageView {
-        let view = NSImageView()
-        view.imageScaling = .scaleProportionallyUpOrDown
+    func makeNSView(context: Context) -> ArtworkView {
+        let view = ArtworkView()
         view.wantsLayer = true
-        view.layer?.cornerRadius = 6
-        view.layer?.masksToBounds = true
         return view
     }
 
-    func updateNSView(_ view: NSImageView, context: Context) {
+    func updateNSView(_ view: ArtworkView, context: Context) {
         context.coordinator.load(urlString, fallback: fallback, into: view)
     }
 
@@ -431,14 +451,14 @@ struct RemoteImage: NSViewRepresentable {
     final class Coordinator {
         private var currentURL: String?
 
-        func load(_ urlString: String?, fallback: NSImage?, into view: NSImageView) {
+        func load(_ urlString: String?, fallback: NSImage?, into view: ArtworkView) {
             guard urlString != currentURL else { return }
             currentURL = urlString
-            view.image = fallback
+            view.picture = fallback
 
             guard let urlString, let url = URL(string: urlString) else { return }
             if let cached = RemoteImageCache.shared.object(forKey: urlString as NSString) {
-                view.image = cached
+                view.picture = cached
                 return
             }
             URLSession.shared.dataTask(with: url) { [weak view] data, _, _ in
@@ -447,7 +467,7 @@ struct RemoteImage: NSViewRepresentable {
                 DispatchQueue.main.async {
                     // Ignore if the row moved on to different content meanwhile.
                     guard self.currentURL == urlString else { return }
-                    view?.image = img
+                    view?.picture = img
                 }
             }.resume()
         }

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// AppleScript bridge to external media players (QuickTime, VLC, browsers,
@@ -42,6 +43,11 @@ final class PlayerBridge {
         "for(var i=0;i<ms.length;i++){var pr=ms[i].getAttribute('property')||ms[i].getAttribute('name');" +
         "if(pr==='og:image'||pr==='twitter:image'){poster=ms[i].content;break}}" +
         "if(!poster&&v&&v.poster)poster=v.poster;" +
+        // YouTube is a single-page app: its og:image often stays on the logo
+        // after in-app navigation, so derive the current video's thumbnail
+        // straight from the ?v= id instead.
+        "if(location.hostname.indexOf('youtube')>-1){var m=location.search.match(/[?&]v=([^&]+)/);" +
+        "if(m)poster='https://i.ytimg.com/vi/'+m[1]+'/hqdefault.jpg'}" +
         "if(onNF){var p=nfp();if(p)return (p.getCurrentTime()/1000)+'|'+(v?String(!v.paused):'false')+'|'+poster+'|'+t}" +
         "return v?v.currentTime+'|'+(!v.paused)+'|'+poster+'|'+t:'none'})()"
     }
@@ -214,6 +220,22 @@ final class PlayerBridge {
 
     private func poll() {
         guard let player, !polling else { return }
+
+        // Never talk to an app that isn't running: `tell application "X"` would
+        // *launch* it, so a player the user just quit would spring back to life.
+        // If it's closed, report nothing playing and stay quiet.
+        if let bundleID = player.bundleID,
+           NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty {
+            Task { @MainActor in
+                guard self.player == player, AppState.shared.playerChoice == player else { return }
+                AppState.shared.extLive = .nothingOpen
+                AppState.shared.nowPlaying = nil
+                AppState.shared.nowPlayingPoster = nil
+                self.lastState = nil
+            }
+            return
+        }
+
         polling = true
         osa(getScript(for: player)) { [weak self] out, err in
             DispatchQueue.main.async {
