@@ -45,7 +45,17 @@ else
   echo "▸ Xcode actool not found — classic .icns only."
 fi
 
-echo "▸ Signing (ad-hoc)…"
-codesign --force --sign - "$APP" > /dev/null 2>&1
+# Sign with a stable self-signed identity if present, so macOS keeps
+# permissions (Accessibility, Automation) across rebuilds. Ad-hoc signing gives
+# every build a new code hash, which makes the system forget every grant and
+# re-prompt endlessly. See Design/make-signing-cert.sh to (re)create the cert.
+IDENTITY="Sofa Self-Signed"
+if security find-identity -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
+  echo "▸ Signing with stable identity ($IDENTITY)…"
+  codesign --force --deep --sign "$IDENTITY" "$APP" > /dev/null 2>&1
+else
+  echo "▸ Signing (ad-hoc — run Design/make-signing-cert.sh for stable permissions)…"
+  codesign --force --sign - "$APP" > /dev/null 2>&1
+fi
 
 echo "✓ Built $APP"
