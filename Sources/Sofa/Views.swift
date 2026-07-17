@@ -42,11 +42,16 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             TitleBar()
-            if state.inRoom {
-                RoomView()
-            } else {
-                IdleView()
+            Group {
+                if state.inRoom {
+                    RoomView()
+                        .transition(.opacity.combined(with: .move(edge: .trailing)))
+                } else {
+                    IdleView()
+                        .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
             }
+            .animation(.spring(duration: 0.35), value: state.inRoom)
         }
         // No minHeight: the panel measures this view and sizes itself to fit,
         // so there's never a slab of empty glass under the content.
@@ -117,28 +122,43 @@ struct IdleView: View {
     @ObservedObject var state = AppState.shared
 
     var body: some View {
-        VStack(spacing: 12) {
-            Text("Watch movies together, apart.\nPlayback stays perfectly in sync.")
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.vertical, 8)
-
-            HStack(spacing: 8) {
-                Text("Your name")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                TextField("Your name", text: $state.displayName)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 160)
+        VStack(spacing: 14) {
+            // Hero
+            VStack(spacing: 6) {
+                Image(systemName: "sofa.fill")
+                    .font(.system(size: 34, weight: .medium))
+                    .foregroundStyle(Color.accentColor.gradient)
+                    .padding(.top, 2)
+                Text("Movie nights, together — apart.")
+                    .font(.system(size: 15, weight: .semibold))
+                Text("Play, pause and skip stay perfectly in sync\nwith everyone in your party.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, 2)
+
+            // Identity: quiet inline row, not a form field shouting for attention.
+            HStack(spacing: 6) {
+                AvatarView(name: state.displayName, size: 22)
+                Text("Watching as")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                TextField("Name", text: $state.displayName)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, weight: .semibold))
+                    .fixedSize()
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Color.primary.opacity(0.05), in: Capsule())
 
             Button {
                 state.hostRoom()
             } label: {
-                Text("Start a Watch Party")
+                Label("Start a Watch Party", systemImage: "play.circle.fill")
                     .font(.system(size: 13, weight: .semibold))
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 5)
             }
             .sofaProminentButton()
             .controlSize(.large)
@@ -150,31 +170,57 @@ struct IdleView: View {
                 Rectangle().fill(.separator).frame(height: 1)
             }
 
-            HStack(spacing: 8) {
-                TextField("Paste an invite link or address", text: $state.joinAddress)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { state.join() }
-                Button("Join") { state.join() }
-                    .sofaGlassButton()
-                    .disabled(state.joining)
+            VStack(spacing: 6) {
+                HStack(spacing: 8) {
+                    TextField("Paste an invite link", text: $state.joinAddress)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { state.join() }
+                    Button("Join") { state.join() }
+                        .sofaGlassButton()
+                        .disabled(state.joining)
+                }
+                if let err = state.joinError {
+                    Text(err).font(.system(size: 11)).foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Text("Or just click the **sofa://** link your friend sent — Sofa joins by itself.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if let err = state.joinError {
-                Text(err).font(.system(size: 11)).foregroundStyle(.red)
+            Button {
+                state.enterTestZone()
+            } label: {
+                Label("Try it solo — Test Zone", systemImage: "testtube.2")
+                    .font(.system(size: 11.5))
             }
-
-            Text("Got a **sofa://** link from iMessage? Just click it — Sofa joins automatically.")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-
-            Button("Test Zone") { state.enterTestZone() }
-                .buttonStyle(.plain)
-                .font(.system(size: 12))
-                .foregroundStyle(Color.accentColor)
-                .padding(.top, 2)
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.top, 2)
         }
-        .padding(.horizontal, 16).padding(.bottom, 14)
+        .padding(.horizontal, 18).padding(.bottom, 14)
+    }
+}
+
+/// Initials-in-a-circle avatar, tinted deterministically from the name.
+struct AvatarView: View {
+    let name: String
+    var size: CGFloat = 24
+
+    private static let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .green]
+
+    var body: some View {
+        let letter = String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased()
+        let tint = Self.palette[abs(name.hashValue) % Self.palette.count]
+        Circle()
+            .fill(tint.gradient)
+            .frame(width: size, height: size)
+            .overlay(
+                Text(letter.isEmpty ? "?" : letter)
+                    .font(.system(size: size * 0.5, weight: .semibold))
+                    .foregroundStyle(.white)
+            )
     }
 }
 
@@ -217,8 +263,8 @@ struct SectionLabel: View {
     let text: String
     var body: some View {
         Text(text.uppercased())
-            .font(.system(size: 11, weight: .semibold))
-            .kerning(0.6)
+            .font(.system(size: 10.5, weight: .semibold))
+            .kerning(0.8)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -227,55 +273,68 @@ struct SectionLabel: View {
 struct Card<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) { content }
-            .padding(12)
+        VStack(alignment: .leading, spacing: 9) { content }
+            .padding(13)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator.opacity(0.5)))
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator.opacity(0.35)))
     }
 }
 
 struct InviteCard: View {
     @ObservedObject var state = AppState.shared
 
+    /// The 6-char room code, pulled from the tail of the invite link.
+    private var roomCode: String {
+        state.inviteLink.split(separator: "/").last.map(String.init) ?? ""
+    }
+
     var body: some View {
         Card {
-            SectionLabel(text: "Invite friends")
-
-            // Who's here right now, by name.
-            if !state.friends.isEmpty {
-                HStack(spacing: 6) {
-                    Image(systemName: "person.2.fill")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
+            HStack {
+                SectionLabel(text: "Your party")
+                Spacer()
+                // Everyone here, as avatars — you first.
+                HStack(spacing: -6) {
+                    AvatarView(name: state.displayName, size: 22)
                     ForEach(state.friends) { friend in
-                        Text(friend.name)
-                            .font(.system(size: 11, weight: .medium))
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(Color.accentColor.opacity(0.15), in: Capsule())
+                        AvatarView(name: friend.name, size: 22)
+                            .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
                     }
-                    Spacer(minLength: 0)
                 }
+                .help(state.friends.isEmpty
+                      ? "Just you so far"
+                      : "You, " + state.friends.map(\.name).joined(separator: ", "))
             }
-            Text(state.inviteLink)
-                .font(.system(size: 12, design: .monospaced))
-                .lineLimit(1).truncationMode(.middle)
-                .textSelection(.enabled)
-                .padding(.horizontal, 10).padding(.vertical, 7)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
-            HStack(spacing: 8) {
+
+            if state.friends.isEmpty {
+                Text("Waiting for friends — send them the invite:")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            } else {
+                Text("Here with " + state.friends.map(\.name).joined(separator: ", "))
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+
+            // The room code is the star; the raw link stays behind Copy/Share.
+            HStack(spacing: 3) {
+                ForEach(Array(roomCode.enumerated()), id: \.offset) { _, ch in
+                    Text(String(ch))
+                        .font(.system(size: 17, weight: .bold, design: .monospaced))
+                        .frame(width: 26, height: 32)
+                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
+                }
+                Spacer(minLength: 8)
                 Button("Copy Link") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(state.inviteLink, forType: .string)
                     state.showToast("Invite link copied — paste it in iMessage")
                 }
                 .sofaGlassButton()
-                .frame(maxWidth: .infinity)
                 ShareButton(link: state.inviteLink)
-                    .frame(maxWidth: .infinity)
             }
-            Text("The link includes this party’s secret code — only people you share it with can join. Same Wi-Fi works out of the box; on different networks, use Tailscale or forward port 7420.")
-                .font(.system(size: 11)).foregroundStyle(.tertiary)
+
+            Text("Only people with this link can join. Same Wi-Fi just works; across networks, use Tailscale or forward port 7420.")
+                .font(.system(size: 10.5)).foregroundStyle(.tertiary)
         }
     }
 }

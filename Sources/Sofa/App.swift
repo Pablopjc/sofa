@@ -195,7 +195,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let topEdge = frame.maxY
         frame.size = NSSize(width: Self.panelWidth, height: height)
         frame.origin.y = topEdge - height
-        panel.setFrame(frame, display: true)
+        if panel.isVisible {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.22
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().setFrame(frame, display: true)
+            }
+        } else {
+            panel.setFrame(frame, display: true)
+        }
     }
 
     // MARK: - Panel toggling
