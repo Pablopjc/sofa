@@ -370,18 +370,29 @@ final class AppState: ObservableObject {
             call = .none
         }
 
-        do {
-            try WindowArranger.enterTheater(player: playerChoice, call: call)
-            theaterActive = true
-            // For browsers: fill the window with the video, hiding page chrome.
-            // A beat after the window resize so vw/vh measure the new size.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [playerChoice] in
-                PlayerBridge.shared.setCinema(true, for: playerChoice)
+        // If the player is in native fullscreen (its own macOS Space), Theater's
+        // windowed layout can't coexist with it — the video would stay on its
+        // Space while the black backdrop shows an empty desktop. Leave fullscreen
+        // first (both the page's HTML5 kind and the window kind), wait for the
+        // Space to switch back, then lay everything out.
+        PlayerBridge.shared.exitBrowserFullscreen(for: playerChoice)
+        let wasWindowFullscreen = WindowArranger.leaveNativeFullscreen(player: playerChoice)
+        let settle = wasWindowFullscreen ? 1.0 : 0.35
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + settle) { [weak self, playerChoice] in
+            guard let self else { return }
+            do {
+                try WindowArranger.enterTheater(player: playerChoice, call: call)
+                self.theaterActive = true
+                // For browsers: fill the window with the video, hiding page chrome.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    PlayerBridge.shared.setCinema(true, for: playerChoice)
+                }
+                // The panel itself is a distraction on black — tuck it away.
+                NotificationCenter.default.post(name: .sofaHidePanel, object: nil)
+            } catch {
+                self.showToast(error.localizedDescription)
             }
-            // The panel itself is a distraction on black — tuck it away.
-            NotificationCenter.default.post(name: .sofaHidePanel, object: nil)
-        } catch {
-            showToast(error.localizedDescription)
         }
     }
 

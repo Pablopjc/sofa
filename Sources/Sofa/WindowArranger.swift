@@ -201,6 +201,21 @@ final class TheaterBackdrop {
 
 @MainActor
 extension WindowArranger {
+    /// Drops the player's window out of macOS window fullscreen (the green
+    /// button / ⌃⌘F kind). Returns true if it actually was fullscreen — the
+    /// caller must then wait for the exit animation before resizing it.
+    @discardableResult
+    static func leaveNativeFullscreen(player: PlayerChoice) -> Bool {
+        guard let bundle = player.bundleID, let window = frontWindow(ofBundleID: bundle) else {
+            return false
+        }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, "AXFullScreen" as CFString, &value) == .success,
+              (value as? Bool) == true else { return false }
+        AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanFalse)
+        return true
+    }
+
     private static func frontWindow(ofBundleID bundleID: String) -> AXUIElement? {
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
         else { return nil }

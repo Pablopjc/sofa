@@ -95,6 +95,24 @@ final class PlayerBridge {
         }
     }
 
+    // Leaves the page's own (HTML5) fullscreen — the kind YouTube's `f` or the
+    // video's ⛶ button triggers, which sends the browser to its own macOS Space.
+    // Theater's windowed cinema layout can't share a screen with that, so it
+    // must drop out of it first.
+    private static let exitFullscreenJS =
+        "(function(){try{" +
+        "if(document.fullscreenElement){document.exitFullscreen()}" +
+        "else if(document.webkitFullscreenElement){document.webkitExitFullscreen()}" +
+        "}catch(e){}})()"
+
+    func exitBrowserFullscreen(for player: PlayerChoice) {
+        switch player {
+        case .chrome: osa(Self.chromeAS(Self.exitFullscreenJS)) { _, _ in }
+        case .safari: osa(Self.safariAS(Self.exitFullscreenJS)) { _, _ in }
+        default: break
+        }
+    }
+
     /// TV, Music and Spotify share iTunes' scripting vocabulary. Spotify also
     /// exposes a cover-art URL; the others don't, so their poster field is empty.
     private static func trackScript(app: String) -> String {
