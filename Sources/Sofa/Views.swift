@@ -719,6 +719,7 @@ struct BuiltinStage: View {
 struct TestFriendCard: View {
     @ObservedObject var state = AppState.shared
     @ObservedObject var friend = AppState.shared.testFriend
+    @ObservedObject var fakeCall = FakeCall.shared
 
     var body: some View {
         Card {
@@ -743,6 +744,15 @@ struct TestFriendCard: View {
                 Button("↪ Skip 30s") { friend.skip(by: 30) }.sofaGlassButton()
             }
             .disabled(!friend.connected)
+
+            Button {
+                FakeCall.shared.toggle()
+            } label: {
+                Label(fakeCall.visible ? "Hide fake call window" : "Show fake call window",
+                      systemImage: "video.badge.checkmark")
+                    .font(.system(size: 11.5))
+            }
+            .sofaGlassButton()
 
             Text("The menu bar icon turns into a 2-seat sofa while the friend is in the room.")
                 .font(.system(size: 11)).foregroundStyle(.tertiary)
@@ -775,14 +785,17 @@ struct LayoutCard: View {
                 state.toggleTheater()
             }
             .sofaGlassButton()
-            .disabled(!state.theaterActive && (state.detectedCallApp == nil || state.playerChoice == .builtin))
+            .disabled(!state.theaterActive && state.playerChoice == .builtin)
         }
     }
+
+    @ObservedObject private var fakeCall = FakeCall.shared
 
     private var headline: String {
         if state.theaterActive { return "Theater is on" }
         if let call = state.detectedCallApp { return "\(call.name) call detected" }
-        return "No call detected"
+        if fakeCall.visible { return "Test call window ready" }
+        return "No call — movie gets the whole stage"
     }
 
     private var subline: String {
@@ -795,7 +808,10 @@ struct LayoutCard: View {
         if state.detectedCallApp != nil {
             return "Blacks out the desktop: just your movie, as big as it fits, with the call beside it."
         }
-        return "Start a FaceTime, Zoom, Discord, Teams or WhatsApp call, then dim everything but the movie and the call."
+        if fakeCall.visible {
+            return "Blacks out the desktop with the movie beside the test call window."
+        }
+        return "Blacks out everything but your movie. Start a call (FaceTime, Zoom, Discord…) and it gets its own column."
     }
 }
 

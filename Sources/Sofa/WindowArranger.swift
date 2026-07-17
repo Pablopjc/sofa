@@ -81,10 +81,17 @@ enum WindowArranger {
     private static let callHeight: CGFloat = 420
     private static let gap: CGFloat = 12
 
+    /// Who occupies the right-hand column in Theater mode.
+    enum CallTarget {
+        case app(CallApp)   // a real call app, moved via Accessibility
+        case fake           // Sofa's own pretend-FaceTime window (Test Zone)
+        case none           // no call: the movie takes the whole stage
+    }
+
     /// Theater mode: a black backdrop covers the whole screen so nothing but
-    /// the movie and the call is visible — the movie fills everything left of
-    /// the call column, the call floats on black, and the desktop disappears.
-    static func enterTheater(player: PlayerChoice, callApp: CallApp) throws {
+    /// the movie (and the call, if any) is visible — the movie fills everything
+    /// left of the call column and the desktop disappears.
+    static func enterTheater(player: PlayerChoice, call: CallTarget) throws {
         guard hasAccessibilityPermission else { throw ArrangeError.noPermission }
         guard let screen = NSScreen.main else { throw ArrangeError.noScreen }
 
@@ -96,36 +103,53 @@ enum WindowArranger {
         let usableW = visible.width
         let usableH = visible.height
 
-        // Movie: flush to the left edge, full height, up to the call column.
-        let videoRect = CGRect(x: left, y: top, width: usableW - callWidth - gap, height: usableH)
+        let hasColumn: Bool
+        if case .none = call { hasColumn = false } else { hasColumn = true }
 
-        // Call: right column, vertically centred, floating on black.
-        let callRect = CGRect(
-            x: left + usableW - callWidth,
-            y: top + (usableH - callHeight) / 2,
-            width: callWidth,
-            height: callHeight
-        )
+        // Movie: flush to the left edge, full height, up to the call column
+        // (or wall to wall when there's no call).
+        let videoW = hasColumn ? usableW - callWidth - gap : usableW
+        let videoRect = CGRect(x: left, y: top, width: videoW, height: usableH)
 
         guard let playerBundle = player.bundleID,
               let playerWindow = frontWindow(ofBundleID: playerBundle) else {
             throw ArrangeError.noPlayerWindow(player.shortLabel)
         }
-        guard let callWindow = frontWindow(ofBundleID: callApp.bundleID) else {
-            throw ArrangeError.noCallWindow(callApp.name)
+        setFrame(playerWindow, videoRect)
+
+        switch call {
+        case .app(let callApp):
+            guard let callWindow = frontWindow(ofBundleID: callApp.bundleID) else {
+                throw ArrangeError.noCallWindow(callApp.name)
+            }
+            // Right column, vertically centred, floating on black (AX coords).
+            setFrame(callWindow, CGRect(
+                x: left + usableW - callWidth,
+                y: top + (usableH - callHeight) / 2,
+                width: callWidth,
+                height: callHeight
+            ))
+        case .fake:
+            // Our own window: native bottom-left coords, no AX needed.
+            FakeCall.shared.position(frame: NSRect(
+                x: visible.maxX - callWidth,
+                y: visible.midY - callHeight / 2,
+                width: callWidth,
+                height: callHeight
+            ))
+        case .none:
+            break
         }
 
-        setFrame(playerWindow, videoRect)
-        setFrame(callWindow, callRect)
-
-        // Black out everything else, then lift the two stars above the backdrop
+        // Black out everything else, then lift the stars above the backdrop
         // (activation raises an app's windows within the same level).
         TheaterBackdrop.shared.show(on: screen)
         if let playerApp = NSRunningApplication.runningApplications(withBundleIdentifier: playerBundle).first {
             playerApp.activate()
         }
-        if let call = NSRunningApplication.runningApplications(withBundleIdentifier: callApp.bundleID).first {
-            call.activate()
+        if case .app(let callApp) = call,
+           let callRunning = NSRunningApplication.runningApplications(withBundleIdentifier: callApp.bundleID).first {
+            callRunning.activate()
         }
     }
 

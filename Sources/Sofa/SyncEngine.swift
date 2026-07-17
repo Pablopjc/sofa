@@ -198,7 +198,7 @@ final class SyncEngine {
             if tracker.finish(false) { conn?.cancel() }
         }
 
-        conn.stateUpdateHandler = { [weak self] st in
+        conn.stateUpdateHandler = { [weak self, weak conn] st in
             Task { @MainActor in
                 guard let self else { return }
                 switch st {
@@ -208,6 +208,12 @@ final class SyncEngine {
                                              name: self.state?.displayName,
                                              token: token ?? self.roomToken))
                 case .failed, .cancelled:
+                    // Only a *current* connection dying is a disconnect. When a
+                    // new room replaces an old one, cancelling the old client
+                    // fires this too — that must not flip the fresh room to
+                    // "Disconnected" (the ghost state you could see after
+                    // hopping from a dead room into Test Zone).
+                    guard let conn, conn === self.client else { return }
                     if !tracker.finish(false) { self.handleDisconnect() }
                 default: break
                 }

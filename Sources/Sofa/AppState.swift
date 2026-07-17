@@ -283,6 +283,7 @@ final class AppState: ObservableObject {
 
     func leaveRoom() {
         if theaterActive { WindowArranger.exitTheater(); theaterActive = false }
+        FakeCall.shared.hide()
         testFriend.leave()
         sync.stop()
         PlayerBridge.shared.stop()
@@ -336,16 +337,13 @@ final class AppState: ObservableObject {
     @Published var theaterActive = false
 
     /// Toggles Theater mode: black backdrop over everything, the movie filling
-    /// the screen up to a call column on the right. Prompts for Accessibility
-    /// permission the first time.
+    /// the screen — with a call column on the right when there's a call (real
+    /// or simulated), wall to wall when there isn't. Prompts for the
+    /// Accessibility permission the first time.
     func toggleTheater() {
         if theaterActive {
             WindowArranger.exitTheater()
             theaterActive = false
-            return
-        }
-        guard let call = detectedCallApp else {
-            showToast("No video call found — start your FaceTime call first.")
             return
         }
         guard playerChoice != .builtin else {
@@ -357,8 +355,18 @@ final class AppState: ObservableObject {
             showToast("Allow Sofa in Accessibility, then press the button again.")
             return
         }
+
+        let call: WindowArranger.CallTarget
+        if let real = detectedCallApp {
+            call = .app(real)
+        } else if FakeCall.shared.visible {
+            call = .fake
+        } else {
+            call = .none
+        }
+
         do {
-            try WindowArranger.enterTheater(player: playerChoice, callApp: call)
+            try WindowArranger.enterTheater(player: playerChoice, call: call)
             theaterActive = true
             // The panel itself is a distraction on black — tuck it away.
             NotificationCenter.default.post(name: .sofaHidePanel, object: nil)

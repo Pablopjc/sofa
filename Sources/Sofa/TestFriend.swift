@@ -28,6 +28,8 @@ final class TestFriend: ObservableObject {
     }
 
     private var roomToken: String?
+    private var greeted = Set<String>()
+    private var presenceTimer: Timer?
 
     func join(token: String?) {
         let port = SyncEngine.port
@@ -44,8 +46,10 @@ final class TestFriend: ObservableObject {
                 switch state {
                 case .ready:
                     self.connected = true
-                    // Authenticate and introduce ourselves like a real friend.
+                    // Authenticate and introduce ourselves like a real friend,
+                    // and keep saying hello so the roster entry stays fresh.
                     self.send(SyncMessage(type: "hello", name: "Test Friend", token: self.roomToken))
+                    self.startPresence()
                 case .failed, .cancelled: self.connected = false
                 default: break
                 }
@@ -57,9 +61,21 @@ final class TestFriend: ObservableObject {
     }
 
     func leave() {
+        presenceTimer?.invalidate(); presenceTimer = nil
+        greeted = []
         conn?.cancel()
         conn = nil
         connected = false
+    }
+
+    private func startPresence() {
+        presenceTimer?.invalidate()
+        presenceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.connected else { return }
+                self.send(SyncMessage(type: "hello", name: "Test Friend", token: self.roomToken))
+            }
+        }
     }
 
     // MARK: - Things the "friend" can do
@@ -104,6 +120,11 @@ final class TestFriend: ObservableObject {
     private func track(_ data: Data) {
         guard let msg = SyncMessage.decode(data), msg.from != id else { return }
         switch msg.type {
+        case "hello":
+            if let from = msg.from, !greeted.contains(from) {
+                greeted.insert(from)
+                send(SyncMessage(type: "hello", name: "Test Friend", token: roomToken))
+            }
         case "play":
             isPlaying = true
             lastKnownTime = msg.time ?? lastKnownTime
