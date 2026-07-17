@@ -805,13 +805,15 @@ struct LayoutCard: View {
         if state.playerChoice == .builtin {
             return "Theater needs an external player like QuickTime or your browser."
         }
+        let browser = state.playerChoice == .chrome || state.playerChoice == .safari
+        let filled = browser ? "fills the window with the video (no page clutter)" : "makes the movie as big as it fits"
         if state.detectedCallApp != nil {
-            return "Blacks out the desktop: just your movie, as big as it fits, with the call beside it."
+            return "Blacks out the desktop, \(filled), and keeps the call in a column beside it."
         }
         if fakeCall.visible {
-            return "Blacks out the desktop with the movie beside the test call window."
+            return "Blacks out the desktop, \(filled), with the test call window beside it."
         }
-        return "Blacks out everything but your movie. Start a call (FaceTime, Zoom, Discord…) and it gets its own column."
+        return "Blacks out everything and \(filled). Start a call (FaceTime, Zoom, Discord…) and it gets its own column."
     }
 }
 

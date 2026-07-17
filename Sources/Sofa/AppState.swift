@@ -282,7 +282,11 @@ final class AppState: ObservableObject {
     }
 
     func leaveRoom() {
-        if theaterActive { WindowArranger.exitTheater(); theaterActive = false }
+        if theaterActive {
+            PlayerBridge.shared.setCinema(false, for: playerChoice)
+            WindowArranger.exitTheater()
+            theaterActive = false
+        }
         FakeCall.shared.hide()
         testFriend.leave()
         sync.stop()
@@ -342,6 +346,7 @@ final class AppState: ObservableObject {
     /// Accessibility permission the first time.
     func toggleTheater() {
         if theaterActive {
+            PlayerBridge.shared.setCinema(false, for: playerChoice)
             WindowArranger.exitTheater()
             theaterActive = false
             return
@@ -368,6 +373,11 @@ final class AppState: ObservableObject {
         do {
             try WindowArranger.enterTheater(player: playerChoice, call: call)
             theaterActive = true
+            // For browsers: fill the window with the video, hiding page chrome.
+            // A beat after the window resize so vw/vh measure the new size.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [playerChoice] in
+                PlayerBridge.shared.setCinema(true, for: playerChoice)
+            }
             // The panel itself is a distraction on black — tuck it away.
             NotificationCenter.default.post(name: .sofaHidePanel, object: nil)
         } catch {

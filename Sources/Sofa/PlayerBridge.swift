@@ -66,6 +66,35 @@ final class PlayerBridge {
         "var v=bv();if(v)v.currentTime=\(secs)})()"
     }
 
+    // Cinema mode: pin the playing video to fill the browser window (hiding the
+    // page's own chrome — header, sidebar, comments) without native fullscreen,
+    // so Theater can leave a call column beside it. Native fullscreen can't:
+    // macOS gives it the whole screen with no room for anything else.
+    private static let cinemaOnJS =
+        "(function(){\(jsHelpers)var v=bv();if(!v)return;" +
+        "var s=document.getElementById('sofa-cinema')||document.createElement('style');" +
+        "s.id='sofa-cinema';s.textContent='html,body{overflow:hidden!important;background:#000!important}';" +
+        "document.documentElement.appendChild(s);" +
+        "v.setAttribute('data-sofa-cinema','1');" +
+        "v.style.cssText='position:fixed!important;top:0!important;left:0!important;" +
+        "width:100vw!important;height:100vh!important;z-index:2147483647!important;" +
+        "background:#000!important;object-fit:contain!important'})()"
+
+    private static let cinemaOffJS =
+        "(function(){var s=document.getElementById('sofa-cinema');if(s)s.remove();" +
+        "var v=document.querySelector('video[data-sofa-cinema]');" +
+        "if(v){v.style.cssText='';v.removeAttribute('data-sofa-cinema')}})()"
+
+    /// Fill the browser window with the video (or undo it). No-op for non-browsers.
+    func setCinema(_ on: Bool, for player: PlayerChoice) {
+        let js = on ? Self.cinemaOnJS : Self.cinemaOffJS
+        switch player {
+        case .chrome: osa(Self.chromeAS(js)) { _, _ in }
+        case .safari: osa(Self.safariAS(js)) { _, _ in }
+        default: break
+        }
+    }
+
     /// TV, Music and Spotify share iTunes' scripting vocabulary. Spotify also
     /// exposes a cover-art URL; the others don't, so their poster field is empty.
     private static func trackScript(app: String) -> String {
