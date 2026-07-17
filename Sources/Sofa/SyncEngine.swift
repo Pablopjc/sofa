@@ -8,6 +8,7 @@ struct SyncMessage {
     var time: Double?
     var playing: Bool?
     var name: String?
+    var art: String?      // poster / artwork URL
     var count: Int?
     var from: String?
     var sentAt: Double?   // ms since epoch
@@ -22,6 +23,7 @@ struct SyncMessage {
         if let time { dict["time"] = time }
         if let playing { dict["playing"] = playing }
         if let name { dict["name"] = name }
+        if let art { dict["art"] = art }
         if let count { dict["count"] = count }
         if let from { dict["from"] = from }
         if let sentAt { dict["sentAt"] = sentAt }
@@ -36,6 +38,7 @@ struct SyncMessage {
             time: (obj["time"] as? NSNumber)?.doubleValue,
             playing: obj["playing"] as? Bool,
             name: obj["name"] as? String,
+            art: obj["art"] as? String,
             count: (obj["count"] as? NSNumber)?.intValue,
             from: obj["from"] as? String,
             sentAt: (obj["sentAt"] as? NSNumber)?.doubleValue
@@ -217,6 +220,7 @@ final class SyncEngine {
                 state.peerCount = msg.count ?? 0
             case "loaded":
                 let name = msg.name ?? "media"
+                state.friendNowPlayingArt = msg.art
                 if state.friendNowPlaying != name {
                     state.friendNowPlaying = name
                     state.showToast("Your friend is watching “\(name)”")

@@ -31,11 +31,19 @@ final class PlayerBridge {
         "pool.sort(function(a,b){var x=a.getBoundingClientRect(),y=b.getBoundingClientRect();" +
         "return (y.width*y.height)-(x.width*x.height)});return pool[0]}"
 
+    // Also grabs the page's og:image (the poster the site advertises for link
+    // previews) so Sofa can show the actual content instead of the app icon —
+    // same idea as Control Center's Now Playing artwork. Meta tags are scanned
+    // with a loop to avoid nested quotes inside the AppleScript string.
     private static var browserGetJS: String {
         "(function(){\(jsHelpers)" +
         "var v=bv();var t=document.title||'';" +
-        "if(onNF){var p=nfp();if(p)return (p.getCurrentTime()/1000)+'|'+(v?String(!v.paused):'false')+'|'+t}" +
-        "return v?v.currentTime+'|'+(!v.paused)+'|'+t:'none'})()"
+        "var poster='';var ms=document.getElementsByTagName('meta');" +
+        "for(var i=0;i<ms.length;i++){var pr=ms[i].getAttribute('property')||ms[i].getAttribute('name');" +
+        "if(pr==='og:image'||pr==='twitter:image'){poster=ms[i].content;break}}" +
+        "if(!poster&&v&&v.poster)poster=v.poster;" +
+        "if(onNF){var p=nfp();if(p)return (p.getCurrentTime()/1000)+'|'+(v?String(!v.paused):'false')+'|'+poster+'|'+t}" +
+        "return v?v.currentTime+'|'+(!v.paused)+'|'+poster+'|'+t:'none'})()"
     }
 
     private static func browserCmdJS(_ cmd: String) -> String {
@@ -52,18 +60,23 @@ final class PlayerBridge {
         "var v=bv();if(v)v.currentTime=\(secs)})()"
     }
 
-    /// TV, Music and Spotify share iTunes' scripting vocabulary.
+    /// TV, Music and Spotify share iTunes' scripting vocabulary. Spotify also
+    /// exposes a cover-art URL; the others don't, so their poster field is empty.
     private static func trackScript(app: String) -> String {
-        """
+        let artwork = app == "Spotify"
+            ? "                try\n                    set art to artwork url of current track\n                end try\n"
+            : ""
+        return """
         tell application "\(app)"
             set t to ""
+            set art to ""
             try
                 set t to name of current track
                 try
                     set t to t & " — " & (artist of current track)
                 end try
-            end try
-            return (player position as text) & "|" & ((player state is playing) as text) & "|" & t
+        \(artwork)    end try
+            return (player position as text) & "|" & ((player state is playing) as text) & "|" & art & "|" & t
         end tell
         """
     }
@@ -85,7 +98,7 @@ final class PlayerBridge {
                 try
                     set t to name of document 1
                 end try
-                return (current time of document 1 as text) & "|" & ((rate of document 1 > 0) as text) & "|" & t
+                return (current time of document 1 as text) & "|" & ((rate of document 1 > 0) as text) & "|" & "" & "|" & t
             end tell
             """
         case .vlc:
@@ -95,7 +108,7 @@ final class PlayerBridge {
                 try
                     set t to name of current item
                 end try
-                return (current time as text) & "|" & (playing as text) & "|" & t
+                return (current time as text) & "|" & (playing as text) & "|" & "" & "|" & t
             end tell
             """
         case .appleTV: return Self.trackScript(app: "TV")
@@ -233,9 +246,9 @@ final class PlayerBridge {
             return
         }
 
-        // "time|playing|title" — split with a limit so a title containing a
-        // pipe (some pages do) doesn't corrupt the parse.
-        let parts = out.split(separator: "|", maxSplits: 2, omittingEmptySubsequences: false)
+        // "time|playing|poster|title" — split with a limit so a title
+        // containing a pipe (some pages do) can't corrupt the parse; it's last.
+        let parts = out.split(separator: "|", maxSplits: 3, omittingEmptySubsequences: false)
         guard parts.count >= 2,
               let time = Double(parts[0].replacingOccurrences(of: ",", with: ".")) else {
             state.extLive = .nothingOpen
@@ -245,10 +258,13 @@ final class PlayerBridge {
         let playing = parts[1].trimmingCharacters(in: .whitespaces) == "true"
         state.extLive = .playing(time: time, isPlaying: playing)
 
-        let title = parts.count >= 3
+        let poster = parts.count >= 3
             ? String(parts[2]).trimmingCharacters(in: .whitespacesAndNewlines)
             : ""
-        updateNowPlaying(title, state: state)
+        let title = parts.count >= 4
+            ? String(parts[3]).trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+        updateNowPlaying(title: title, poster: poster, state: state)
 
         let now = Date()
         if let last = lastState, now >= suppressUntil {
@@ -266,14 +282,18 @@ final class PlayerBridge {
         lastState = (time, playing, now)
     }
 
-    /// Publishes the title locally and tells the room, but only when it
-    /// actually changes — the poll runs every 0.7s.
+    /// Publishes the title + poster locally and tells the room, but only when
+    /// the title actually changes — the poll runs every 0.7s.
     @MainActor
-    private func updateNowPlaying(_ title: String, state: AppState) {
-        let clean = title.isEmpty ? nil : title
-        guard clean != state.nowPlaying else { return }
-        state.nowPlaying = clean
-        if let clean { state.sync.send(SyncMessage(type: "loaded", name: clean)) }
+    private func updateNowPlaying(title: String, poster: String, state: AppState) {
+        let cleanTitle = title.isEmpty ? nil : title
+        let cleanPoster = poster.hasPrefix("http") ? poster : nil
+        state.nowPlayingPoster = cleanPoster
+        guard cleanTitle != state.nowPlaying else { return }
+        state.nowPlaying = cleanTitle
+        if let cleanTitle {
+            state.sync.send(SyncMessage(type: "loaded", name: cleanTitle, art: cleanPoster))
+        }
     }
 
     // MARK: - Applying remote commands

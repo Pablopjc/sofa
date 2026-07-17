@@ -297,25 +297,32 @@ struct PlayerCard: View {
                     player: player,
                     selected: state.playerChoice == player,
                     live: state.playerChoice == player ? state.extLive : nil,
-                    title: state.playerChoice == player ? state.nowPlaying : nil
+                    title: state.playerChoice == player ? state.nowPlaying : nil,
+                    poster: state.playerChoice == player ? state.nowPlayingPoster : nil
                 ) { state.selectPlayer(player) }
             }
 
-            // The built-in player is always available.
-            SourceRow(
-                player: .builtin,
-                selected: state.playerChoice == .builtin,
-                live: nil,
-                title: state.playerChoice == .builtin ? state.builtin.mediaName : nil
-            ) { state.selectPlayer(.builtin) }
+            // Built-in player only appears as a row while it's the one in use
+            // (eg. Test Zone); otherwise it lives in the overflow menu below.
+            if state.playerChoice == .builtin {
+                SourceRow(
+                    player: .builtin,
+                    selected: true,
+                    live: nil,
+                    title: state.builtin.mediaName,
+                    poster: nil
+                ) { }
+            }
 
             // What the other side is watching, straight from their broadcast.
             if let friendTitle = state.friendNowPlaying {
                 Divider().opacity(0.4)
                 HStack(spacing: 8) {
-                    Image(systemName: "sofa.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                    RemoteImage(
+                        urlString: state.friendNowPlayingArt,
+                        fallback: NSImage(systemSymbolName: "sofa.fill", accessibilityDescription: nil)
+                    )
+                    .frame(width: 28, height: 28)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Your friend is watching")
                             .font(.system(size: 10)).foregroundStyle(.tertiary)
@@ -326,7 +333,7 @@ struct PlayerCard: View {
                 }
             }
 
-            if state.detectedSources.isEmpty {
+            if state.detectedSources.isEmpty && state.playerChoice != .builtin {
                 Text("Open a movie in QuickTime, VLC, Apple TV or your browser (YouTube, Netflix, Prime Video…) and it’ll show up here.")
                     .font(.system(size: 11)).foregroundStyle(.tertiary)
                     .padding(.top, 2)
@@ -339,13 +346,15 @@ struct PlayerCard: View {
                     .padding(.top, 2)
             }
 
-            // Escape hatch: pick an app that isn't open yet.
+            // Escape hatch: pick an app that isn't open yet, or Sofa's own player.
             Menu {
                 ForEach(PlayerChoice.externalPlayers) { p in
                     Button(p.shortLabel) { state.selectPlayer(p) }
                 }
+                Divider()
+                Button("Sofa’s built-in player") { state.selectPlayer(.builtin) }
             } label: {
-                Text("Choose an app that isn’t open yet")
+                Text("Choose another player…")
                     .font(.system(size: 11))
             }
             .menuStyle(.borderlessButton)
@@ -396,6 +405,63 @@ struct PlayerCard: View {
     }
 }
 
+/// Downloads and caches a remote image (poster / cover art), showing a fallback
+/// image while it loads or if there's none. Built on NSImageView so it needs no
+/// SwiftUI @State (the macro plugin isn't in the command-line toolchain).
+/// Cached by URL so the 0.7s poll doesn't re-download the same artwork.
+struct RemoteImage: NSViewRepresentable {
+    let urlString: String?
+    let fallback: NSImage?
+
+    func makeNSView(context: Context) -> NSImageView {
+        let view = NSImageView()
+        view.imageScaling = .scaleProportionallyUpOrDown
+        view.wantsLayer = true
+        view.layer?.cornerRadius = 6
+        view.layer?.masksToBounds = true
+        return view
+    }
+
+    func updateNSView(_ view: NSImageView, context: Context) {
+        context.coordinator.load(urlString, fallback: fallback, into: view)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        private var currentURL: String?
+
+        func load(_ urlString: String?, fallback: NSImage?, into view: NSImageView) {
+            guard urlString != currentURL else { return }
+            currentURL = urlString
+            view.image = fallback
+
+            guard let urlString, let url = URL(string: urlString) else { return }
+            if let cached = RemoteImageCache.shared.object(forKey: urlString as NSString) {
+                view.image = cached
+                return
+            }
+            URLSession.shared.dataTask(with: url) { [weak view] data, _, _ in
+                guard let data, let img = NSImage(data: data) else { return }
+                RemoteImageCache.shared.setObject(img, forKey: urlString as NSString)
+                DispatchQueue.main.async {
+                    // Ignore if the row moved on to different content meanwhile.
+                    guard self.currentURL == urlString else { return }
+                    view?.image = img
+                }
+            }.resume()
+        }
+    }
+}
+
+enum RemoteImageCache {
+    static let shared: NSCache<NSString, NSImage> = {
+        let c = NSCache<NSString, NSImage>()
+        c.countLimit = 40
+        return c
+    }()
+}
+
 /// A selectable source row: app icon + name + status, like Control Center.
 struct SourceRow: View {
     let player: PlayerChoice
@@ -403,12 +469,16 @@ struct SourceRow: View {
     let live: ExtLiveState?
     /// What's actually playing in this app, when we know it.
     var title: String?
+    /// Content preview URL (og:image / cover art), shown instead of the app icon.
+    var poster: String?
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                icon.frame(width: 28, height: 28)
+                // Content preview like Control Center, falling back to the app icon.
+                RemoteImage(urlString: poster, fallback: fallbackImage)
+                    .frame(width: 28, height: 28)
                 VStack(alignment: .leading, spacing: 1) {
                     // Now Playing style: the title leads, the app is metadata.
                     if let title, !title.isEmpty {
@@ -446,18 +516,13 @@ struct SourceRow: View {
         .buttonStyle(.plain)
     }
 
-    @ViewBuilder private var icon: some View {
+    /// The app icon (or a symbol) shown when there's no content preview.
+    private var fallbackImage: NSImage? {
         if player == .builtin {
-            Image(systemName: "sofa.fill")
-                .resizable().aspectRatio(contentMode: .fit)
-                .foregroundStyle(.secondary).padding(4)
-        } else if let ic = player.appIcon {
-            Image(nsImage: ic).resizable().aspectRatio(contentMode: .fit)
-        } else {
-            Image(systemName: "play.rectangle")
-                .resizable().aspectRatio(contentMode: .fit)
-                .foregroundStyle(.secondary).padding(2)
+            return NSImage(systemSymbolName: "sofa.fill", accessibilityDescription: nil)
         }
+        return player.appIcon
+            ?? NSImage(systemSymbolName: "play.rectangle", accessibilityDescription: nil)
     }
 
     private var statusText: String {
