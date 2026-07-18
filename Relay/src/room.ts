@@ -14,6 +14,7 @@ import {
 
 export interface Env {
   ROOMS: DurableObjectNamespace<Room>;
+  SOCIAL: DurableObjectNamespace<import("./social").SocialHub>;
   ROOM_CREATION_LIMITER: RateLimit;
   ROOM_CONNECT_LIMITER: RateLimit;
   ROOM_TTL_SECONDS?: string;

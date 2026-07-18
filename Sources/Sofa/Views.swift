@@ -38,10 +38,15 @@ extension View {
 
 struct ContentView: View {
     @ObservedObject var state = AppState.shared
+    @ObservedObject var social = SocialService.shared
 
     var body: some View {
         VStack(spacing: 0) {
             TitleBar()
+            if let invite = social.invitations.first {
+                PartyInvitationCard(invite: invite)
+                    .padding(.horizontal, 16).padding(.bottom, 8)
+            }
             Group {
                 if state.inRoom {
                     RoomView()
@@ -120,6 +125,7 @@ struct TitleBar: View {
 
 struct IdleView: View {
     @ObservedObject var state = AppState.shared
+    @ObservedObject var social = SocialService.shared
 
     private static let maximumDisplayNameLength = 40
 
@@ -158,6 +164,8 @@ struct IdleView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.bottom, 2)
+
+            FriendsCard()
 
             // Identity: quiet inline row, not a form field shouting for attention.
             HStack(spacing: 6) {
@@ -341,6 +349,7 @@ struct Card<Content: View>: View {
 
 struct InviteCard: View {
     @ObservedObject var state = AppState.shared
+    @ObservedObject var social = SocialService.shared
 
     /// The visible room ID is never the long capability secret in the link.
     private var roomCode: String {
@@ -395,7 +404,104 @@ struct InviteCard: View {
                  ? "Works across networks. Sofa relays only sync controls — never video or call audio."
                  : "Local party: friends must be on the same local network.")
                 .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+
+            if state.roomIsOnline && !social.friends.isEmpty {
+                Divider().opacity(0.4)
+                HStack {
+                    Text("Invite a saved friend")
+                        .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    Spacer()
+                    Menu("Invite…") {
+                        ForEach(social.friends) { friend in
+                            Button(friend.name) { social.sendInvitation(to: friend) }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+            }
         }
+    }
+}
+
+struct FriendsCard: View {
+    @ObservedObject var social = SocialService.shared
+
+    var body: some View {
+        if social.ready {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Text("FRIENDS")
+                        .font(.system(size: 10.5, weight: .semibold)).kerning(0.8)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if !social.friends.isEmpty {
+                        Text("\(social.friends.count) saved")
+                            .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    }
+                }
+
+                if social.friends.isEmpty {
+                    Text("Send your friend link once. After that, invitations arrive directly in Sofa.")
+                        .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 5) {
+                        ForEach(social.friends.prefix(5)) { friend in
+                            AvatarView(name: friend.name, size: 22)
+                                .help(friend.name)
+                        }
+                        if social.friends.count > 5 {
+                            Text("+\(social.friends.count - 5)")
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                }
+
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(social.friendLink, forType: .string)
+                    AppState.shared.showToast("Friend link copied — it only needs to be sent once.")
+                } label: {
+                    Label("Copy my friend link", systemImage: "person.badge.plus")
+                        .font(.system(size: 10.5))
+                }
+                .sofaGlassButton()
+                .disabled(social.friendLink.isEmpty)
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 11))
+        } else if let error = social.errorMessage {
+            Text(error).font(.system(size: 10.5)).foregroundStyle(.tertiary)
+        }
+    }
+}
+
+struct PartyInvitationCard: View {
+    let invite: SofaPartyInvitation
+    @ObservedObject var state = AppState.shared
+    @ObservedObject var social = SocialService.shared
+
+    var body: some View {
+        HStack(spacing: 9) {
+            AvatarView(name: invite.fromName, size: 28)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(invite.fromName) invited you")
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text(invite.title.map { "Watch “\($0)” together?" } ?? "Join their watch party?")
+                    .font(.system(size: 10.5)).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+            Button("Not now") { social.dismissInvitation(id: invite.id) }
+                .sofaGlassButton()
+            Button("Join") { social.acceptInvitation(id: invite.id) }
+                .sofaProminentButton()
+                .disabled(state.inRoom || state.hosting || state.joining)
+        }
+        .padding(10)
+        .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Color.accentColor.opacity(0.25)))
     }
 }
 

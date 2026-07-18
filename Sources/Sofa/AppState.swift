@@ -5,6 +5,7 @@ import Foundation
 extension Notification.Name {
     /// Asks the app delegate to hide the menu bar panel (eg. entering Theater).
     static let sofaHidePanel = Notification.Name("SofaHidePanel")
+    static let sofaShowPanel = Notification.Name("SofaShowPanel")
 }
 
 /// Which player Sofa is syncing.
@@ -121,7 +122,10 @@ final class AppState: ObservableObject {
     /// Your name, shown to friends in the room. Persisted across launches.
     @Published var displayName: String = UserDefaults.standard.string(forKey: "SofaDisplayName")
         ?? NSFullUserName().components(separatedBy: " ").first ?? "Me" {
-        didSet { UserDefaults.standard.set(displayName, forKey: "SofaDisplayName") }
+        didSet {
+            UserDefaults.standard.set(displayName, forKey: "SofaDisplayName")
+            SocialService.shared.displayNameChanged(displayName)
+        }
     }
 
     /// Friends currently in the room (peer id → name), kept fresh by presence.

@@ -9,6 +9,10 @@
       {
         "name": "ROOMS",
         "class_name": "Room"
+      },
+      {
+        "name": "SOCIAL",
+        "class_name": "SocialHub"
       }
     ]
   },
@@ -32,6 +36,10 @@
   ],
   "exports": {
     "Room": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "SocialHub": {
       "type": "durable-object",
       "storage": "sqlite"
     }

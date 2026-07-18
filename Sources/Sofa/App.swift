@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UserNotifications
 
 // MARK: - Panel
 
@@ -12,7 +13,7 @@ final class SofaPanel: NSPanel {
 // MARK: - App delegate
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     static let panelWidth: CGFloat = 380
 
     private var statusItem: NSStatusItem!
@@ -31,6 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu bar app: no Dock icon
         installEditMenu()
+        UNUserNotificationCenter.current().delegate = self
+        SocialService.shared.start()
 
         // Variable length: the "friends connected" sofa is wider than the
         // lone armchair, so the item grows when someone joins.
@@ -135,6 +138,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         NotificationCenter.default.addObserver(
+            forName: .sofaShowPanel, object: nil, queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.async { self?.showPanel() }
+        }
+
+        NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: panel, queue: .main
         ) { _ in
             // Behave like a popover: hide on blur unless media is loaded/playing.
@@ -147,8 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let host = pendingJoin {
             pendingJoin = nil
-            showPanel()
-            AppState.shared.join(target: host)
+            handleInvite(urlString: host)
         }
     }
 
@@ -272,6 +280,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - sofa:// links
 
     private func handleInvite(urlString: String) {
+        if SocialService.friendLinkParts(urlString) != nil {
+            if panel == nil {
+                pendingJoin = urlString
+                return
+            }
+            showPanel()
+            SocialService.shared.acceptFriendLink(urlString)
+            return
+        }
         // Pass the raw link through: join() parses out address and room code.
         guard AppState.parseTarget(urlString) != nil else { return }
 
@@ -290,6 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        SocialService.shared.stop()
         PlayerBridge.shared.stop()
         AppState.shared.stopCallAudio()
         let restoredTheater = AppState.shared.prepareTheaterForTermination()
@@ -299,6 +317,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // exits so Safari/Chrome return exactly where the user left them.
         if restoredTheater {
             RunLoop.current.run(until: Date().addingTimeInterval(2.0))
+        }
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let inviteID = response.notification.request.content.userInfo["inviteID"] as? String
+        Task { @MainActor [weak self] in
+            if let inviteID {
+                if response.actionIdentifier == SocialService.joinAction {
+                    SocialService.shared.acceptInvitation(id: inviteID)
+                } else if response.actionIdentifier == SocialService.declineAction {
+                    SocialService.shared.dismissInvitation(id: inviteID)
+                } else {
+                    self?.showPanel()
+                }
+            }
+            completionHandler()
         }
     }
 }

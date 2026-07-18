@@ -174,62 +174,52 @@ final class CallAudioVolume: @unchecked Sendable {
             memset(outData, 0, Int(outputs[index].mDataByteSize))
         }
 
-        if inputs.count == outputs.count {
-            for index in inputs.indices {
-                scaleMatching(input: inputs[index], output: &outputs[index])
-            }
-            return
+        // HAL is free to expose the tap as one interleaved stereo buffer, two
+        // mono buffers, or a different buffer grouping than the output. The
+        // previous code returned early whenever the *buffer counts* matched,
+        // even when their channel layouts did not; that left most output
+        // channels silent and caused the huge 100% → 98% volume cliff.
+        struct Channel {
+            let samples: UnsafePointer<Float>
+            let stride: Int
+            let offset: Int
+            let frames: Int
         }
-
-        // HAL commonly exposes a stereo tap as one interleaved buffer and the
-        // physical output as two mono buffers (or the inverse).
-        if inputs.count == 1, inputs[0].mNumberChannels == 2,
-           outputs.count >= 2,
-           outputs[0].mNumberChannels == 1, outputs[1].mNumberChannels == 1 {
-            guard let source = inputs[0].mData?.assumingMemoryBound(to: Float.self),
-                  let left = outputs[0].mData?.assumingMemoryBound(to: Float.self),
-                  let right = outputs[1].mData?.assumingMemoryBound(to: Float.self) else { return }
-            let frames = min(
-                Int(inputs[0].mDataByteSize) / (MemoryLayout<Float>.size * 2),
-                min(
-                    Int(outputs[0].mDataByteSize) / MemoryLayout<Float>.size,
-                    Int(outputs[1].mDataByteSize) / MemoryLayout<Float>.size
-                )
-            )
-            for frame in 0..<frames {
-                left[frame] = source[frame * 2] * gain
-                right[frame] = source[frame * 2 + 1] * gain
-            }
-            return
-        }
-
-        if inputs.count >= 2,
-           inputs[0].mNumberChannels == 1, inputs[1].mNumberChannels == 1,
-           outputs.count == 1, outputs[0].mNumberChannels == 2 {
-            guard let left = inputs[0].mData?.assumingMemoryBound(to: Float.self),
-                  let right = inputs[1].mData?.assumingMemoryBound(to: Float.self),
-                  let destination = outputs[0].mData?.assumingMemoryBound(to: Float.self) else { return }
-            let frames = min(
-                Int(outputs[0].mDataByteSize) / (MemoryLayout<Float>.size * 2),
-                min(
-                    Int(inputs[0].mDataByteSize) / MemoryLayout<Float>.size,
-                    Int(inputs[1].mDataByteSize) / MemoryLayout<Float>.size
-                )
-            )
-            for frame in 0..<frames {
-                destination[frame * 2] = left[frame] * gain
-                destination[frame * 2 + 1] = right[frame] * gain
+        var sourceChannels: [Channel] = []
+        for buffer in inputs {
+            let channels = Int(buffer.mNumberChannels)
+            guard channels > 0,
+                  let samples = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
+            let frames = Int(buffer.mDataByteSize) / (MemoryLayout<Float>.size * channels)
+            for channel in 0..<channels {
+                sourceChannels.append(Channel(
+                    samples: UnsafePointer(samples), stride: channels,
+                    offset: channel, frames: frames
+                ))
             }
         }
-    }
+        guard !sourceChannels.isEmpty else { return }
 
-    private func scaleMatching(input: AudioBuffer, output: inout AudioBuffer) {
-        guard input.mNumberChannels == output.mNumberChannels,
-              let source = input.mData?.assumingMemoryBound(to: Float.self),
-              let destination = output.mData?.assumingMemoryBound(to: Float.self) else { return }
-        let samples = min(Int(input.mDataByteSize), Int(output.mDataByteSize))
-            / MemoryLayout<Float>.size
-        for sample in 0..<samples { destination[sample] = source[sample] * gain }
+        var outputChannel = 0
+        for index in outputs.indices {
+            let channels = Int(outputs[index].mNumberChannels)
+            guard channels > 0,
+                  let destination = outputs[index].mData?.assumingMemoryBound(to: Float.self)
+            else { continue }
+            let outputFrames = Int(outputs[index].mDataByteSize) /
+                (MemoryLayout<Float>.size * channels)
+            for channel in 0..<channels {
+                // Mono is duplicated; surplus source channels are folded onto
+                // the last available channel rather than disappearing.
+                let source = sourceChannels[min(outputChannel, sourceChannels.count - 1)]
+                let frames = min(outputFrames, source.frames)
+                for frame in 0..<frames {
+                    destination[frame * channels + channel] =
+                        source.samples[frame * source.stride + source.offset] * gain
+                }
+                outputChannel += 1
+            }
+        }
     }
 
     private func stopLocked() {

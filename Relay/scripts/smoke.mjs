@@ -65,6 +65,39 @@ const room = await created.json();
 assert.match(room.roomID, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/u);
 assert.match(room.secret, /^[A-Za-z0-9_-]{43}$/u);
 
+async function registerSocial(name, clientID) {
+  const response = await fetch(`${baseURL}/v1/social/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Sofa-Client-ID": clientID },
+    body: JSON.stringify({ name }),
+  });
+  assert.equal(response.status, 201);
+  return response.json();
+}
+
+const socialA = await registerSocial(`Smoke A ${crypto.randomUUID().slice(0, 6)}`, crypto.randomUUID());
+const socialB = await registerSocial(`Smoke B ${crypto.randomUUID().slice(0, 6)}`, crypto.randomUUID());
+const authA = `Bearer ${socialA.id}.${socialA.authToken}`;
+const authB = `Bearer ${socialB.id}.${socialB.authToken}`;
+const friendCode = socialA.friendLink.split("/").at(-1);
+const pairing = await fetch(`${baseURL}/v1/social/friends/accept`, {
+  method: "POST",
+  headers: { Authorization: authB, "Content-Type": "application/json" },
+  body: JSON.stringify({ friendID: socialA.id, code: friendCode }),
+});
+assert.equal(pairing.status, 200);
+const saved = await fetch(`${baseURL}/v1/social/friends`, { headers: { Authorization: authA } });
+assert.equal(saved.status, 200);
+assert.equal((await saved.json()).friends.some((friend) => friend.id === socialB.id), true);
+const socialInvite = await fetch(`${baseURL}/v1/social/invites`, {
+  method: "POST",
+  headers: { Authorization: authA, "Content-Type": "application/json" },
+  body: JSON.stringify({
+    friendID: socialB.id, roomID: room.roomID, secret: room.secret, title: "Smoke movie",
+  }),
+});
+assert.equal(socialInvite.status, 201);
+
 const first = await openSocket(room.webSocketURL);
 first.socket.send(JSON.stringify({ type: "hello", token: room.secret, name: "Spain" }));
 const firstWelcome = await first.inbox.next((message) => message.type === "welcome");
@@ -110,4 +143,4 @@ assert.equal(bye.from, secondWelcome.peerID);
 await first.inbox.next((message) => message.type === "peers" && message.count === 1);
 
 first.socket.close(1000, "smoke complete");
-console.log("Remote relay smoke test passed: create, WSS auth, peers, play, bye");
+console.log("Remote relay smoke test passed: rooms, saved friends, invitation, WSS sync");

@@ -7,6 +7,7 @@ The Electron original lives in `../Sofa` and is installed as **Sofa Legacy.app**
 ## Features (same as Legacy)
 
 - **Online watch parties**: both Macs connect out to an encrypted public WSS relay, so friends on different home networks can join through a `sofa://` invite link. Only tiny sync/presence messages cross the relay; video and call audio never do.
+- **Saved friends and direct invitations**: exchange a capability link once, then invite saved friends from inside a party. The device credential lives in macOS Keychain; invitations expire after 15 minutes and can be accepted from Sofa or a native notification.
 - **Local mode remains available**: the embedded WebSocket relay on port 7420 still powers Test Zone, same-Wi-Fi parties and old invite links.
 - **Syncs your real players**: QuickTime, VLC, Chrome/Safari (YouTube, Netflix via its internal player API, Disney+…), Apple Music, Spotify — via AppleScript polling, plus a built-in AVPlayer with drag & drop and a bundled test video.
 - Play/pause/seek mirroring with latency compensation and periodic drift correction.
@@ -45,7 +46,7 @@ gh repo create sofa --public --source=. --remote=origin --push
 Once the source and `Info.plist` already contain the new version, publish it with:
 
 ```bash
-./release.sh 0.1.28 "Shared content handoff and working FaceTime call volume"
+./release.sh 0.1.29 "Saved friends, direct invitations and smooth FaceTime volume"
 ```
 
 The release script requires a clean `master` already pushed to GitHub. It builds
@@ -68,6 +69,7 @@ Requires Xcode command line tools (Swift 6+). If Xcode 26+ is installed, the bui
 - `Sources/Sofa/RoomTarget.swift` — strict parser for versioned online and legacy LAN invitations
 - `Sources/Sofa/PlayerBridge.swift` — AppleScript bridge to external players
 - `Sources/Sofa/CallAudioVolume.swift` — local Core Audio FaceTime attenuator
+- `Sources/Sofa/SocialService.swift` — Keychain identity, saved friends, invitations and notifications
 - `Sources/Sofa/BuiltinPlayer.swift` — AVPlayer with sync events
 - `Sources/Sofa/Views.swift` — SwiftUI UI (idle + room)
 - `Resources/` — demo video, icns, Icon Composer bundle

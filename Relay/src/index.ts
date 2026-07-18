@@ -1,7 +1,9 @@
 import { roomTtlMilliseconds } from "./config";
 import { Room, type Env } from "./room";
+import { SocialHub } from "./social";
 
 export { Room } from "./room";
+export { SocialHub } from "./social";
 
 const ROOM_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_ID_LENGTH = 6;
@@ -85,6 +87,15 @@ export default {
 
     if (request.method === "GET" && (url.pathname === "/health" || url.pathname === "/healthz")) {
       return json({ ok: true, service: "sofa-sync-relay" });
+    }
+    if (url.pathname.startsWith("/v1/social/")) {
+      const actor = request.headers.get("CF-Connecting-IP") ?? "social";
+      const admission = await env.ROOM_CONNECT_LIMITER.limit({ key: `social:${actor}` });
+      if (!admission.success) return json({ error: "social_rate_limited" }, 429, { "Retry-After": "60" });
+      const stub = env.SOCIAL.get(env.SOCIAL.idFromName("global"));
+      const internalURL = new URL(request.url);
+      internalURL.pathname = url.pathname.slice("/v1/social".length) || "/";
+      return stub.fetch(new Request(internalURL, request));
     }
     if (request.method === "POST" && url.pathname === "/v1/rooms") {
       const contentType = request.headers.get("Content-Type")?.split(";", 1)[0].trim();

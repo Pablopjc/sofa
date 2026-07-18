@@ -9,6 +9,13 @@ interface CreatedRoom {
   expiresAt: number;
 }
 
+interface SocialProfile {
+  id: string;
+  name: string;
+  authToken: string;
+  friendLink: string;
+}
+
 let nextTestAddress = 1;
 
 interface CreateRequestOptions {
@@ -79,6 +86,82 @@ async function connect(
 }
 
 describe("relay worker", () => {
+  it("pairs saved friends once and delivers private party invitations", async () => {
+    const register = async (name: string, ip: string): Promise<SocialProfile> => {
+      const response = await SELF.fetch("https://relay.test/v1/social/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
+        body: JSON.stringify({ name }),
+      });
+      expect(response.status).toBe(201);
+      return response.json<SocialProfile>();
+    };
+    const pablo = await register("Pablo", "192.0.2.10");
+    const mira = await register("Mira", "192.0.2.11");
+    const pabloAuth = `Bearer ${pablo.id}.${pablo.authToken}`;
+    const miraAuth = `Bearer ${mira.id}.${mira.authToken}`;
+    const friendParts = pablo.friendLink.split("/");
+    const accepted = await SELF.fetch("https://relay.test/v1/social/friends/accept", {
+      method: "POST",
+      headers: {
+        Authorization: miraAuth,
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": "192.0.2.11",
+      },
+      body: JSON.stringify({ friendID: pablo.id, code: friendParts.at(-1) }),
+    });
+    expect(accepted.status).toBe(200);
+
+    const friends = await SELF.fetch("https://relay.test/v1/social/friends", {
+      headers: { Authorization: pabloAuth, "CF-Connecting-IP": "192.0.2.10" },
+    });
+    expect(await friends.json()).toMatchObject({ friends: [{ id: mira.id, name: "Mira" }] });
+
+    const eventsResponse = await SELF.fetch("https://relay.test/v1/social/events", {
+      headers: {
+        Authorization: miraAuth,
+        Upgrade: "websocket",
+        "CF-Connecting-IP": "192.0.2.11",
+      },
+    });
+    expect(eventsResponse.status).toBe(101);
+    const events = eventsResponse.webSocket;
+    if (!events) throw new Error("Expected social WebSocket");
+    events.accept();
+    const messages = new MessageQueue(events);
+    expect(await messages.next()).toMatchObject({ type: "social_ready" });
+
+    const room = await createRoom();
+    const sent = await SELF.fetch("https://relay.test/v1/social/invites", {
+      method: "POST",
+      headers: {
+        Authorization: pabloAuth,
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": "192.0.2.10",
+      },
+      body: JSON.stringify({
+        friendID: mira.id, roomID: room.roomID, secret: room.secret, title: "The Office",
+      }),
+    });
+    expect(sent.status).toBe(201);
+    expect(await sent.json()).toEqual({ ok: true, delivered: true });
+    const invitation = await messages.next();
+    expect(invitation).toMatchObject({
+      type: "party_invite",
+      invite: {
+        fromID: pablo.id, fromName: "Pablo", roomID: room.roomID, title: "The Office",
+      },
+    });
+    expect(JSON.stringify(invitation)).toContain(room.secret);
+    events.close(1000, "done");
+  });
+
+  it("rejects invalid social credentials and friend capabilities", async () => {
+    expect((await SELF.fetch("https://relay.test/v1/social/friends", {
+      headers: { "CF-Connecting-IP": "192.0.2.20" },
+    })).status).toBe(401);
+  });
+
   it("reports health and creates visible room codes with strong secrets", async () => {
     const health = await SELF.fetch("https://relay.test/health");
     expect(await health.json()).toEqual({ ok: true, service: "sofa-sync-relay" });
