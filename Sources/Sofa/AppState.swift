@@ -575,8 +575,8 @@ final class AppState: ObservableObject {
                 call = .fake
                 reserveCallColumn = true
             } else if !self.isTestMode, let real = self.detectedCallApp {
-                failBeforeArrangement("The \(real.name) window cannot join the video’s full-screen Space yet.")
-                return
+                call = .app(real)
+                reserveCallColumn = true
             } else {
                 // Test mode ignores unrelated call apps that merely happen to be
                 // open. Use “Show fake call window” to populate the right side.

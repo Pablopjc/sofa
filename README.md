@@ -43,7 +43,7 @@ gh repo create sofa --public --source=. --remote=origin --push
 Once the source and `Info.plist` already contain the new version, publish it with:
 
 ```bash
-./release.sh 0.1.25 "Online watch parties across different networks"
+./release.sh 0.1.26 "FaceTime support in Theater mode"
 ```
 
 The release script requires a clean `master` already pushed to GitHub. It builds

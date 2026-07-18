@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.25-pagefs-resize-expanded";
-  const EVENT_NAME = "sofa-theater-command-0.1.25-pagefs-resize-expanded";
+  const VERSION = "0.1.26-pagefs-facetime";
+  const EVENT_NAME = "sofa-theater-command-0.1.26-pagefs-facetime";
   const READY_ATTR = "data-sofa-theater-helper";
   const COMMAND_ATTR = "data-sofa-theater-command";
   const STATUS_ATTR = "data-sofa-theater-status";

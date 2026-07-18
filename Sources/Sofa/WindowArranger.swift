@@ -202,6 +202,7 @@ enum WindowArranger {
                 player: player,
                 playerWindow: initialPlayer,
                 playerBaseline: initialPlayerManaged,
+                callBaseline: initialCallManaged,
                 toolbarBaseline: inheritedSession?.browserToolbarWasAlwaysShown,
                 fakeCallBaseline: inheritedSession?.fakeCallFrame,
                 usesExistingPageFullscreen: browserPageFullscreen,
@@ -301,6 +302,7 @@ enum WindowArranger {
         player: PlayerChoice,
         playerWindow: AXUIElement,
         playerBaseline: ManagedWindow,
+        callBaseline: ManagedWindow?,
         toolbarBaseline: Bool?,
         fakeCallBaseline: NSRect?,
         usesExistingPageFullscreen: Bool,
@@ -329,7 +331,7 @@ enum WindowArranger {
             let session = TheaterSession(
                 playerChoice: player,
                 player: playerBaseline,
-                call: nil,
+                call: callBaseline,
                 fakeCallFrame: call.isFake ? (fakeCallBaseline ?? FakeCall.shared.frame) : nil,
                 usesBrowserFullscreen: true,
                 usesExistingPageFullscreen: usesExistingPageFullscreen,
@@ -443,6 +445,19 @@ enum WindowArranger {
             }
         }
 
+        let realCallTarget: CGRect?
+        if let realCall = session.call {
+            let target = pageFullscreenCallFrame(
+                on: screen,
+                originalFrame: realCall.originalFrame
+            )
+            setAXFrame(realCall.element, target)
+            raise(realCall.element)
+            realCallTarget = target
+        } else {
+            realCallTarget = nil
+        }
+
         // A panel can arrive one beat after the browser's Space transition.
         // Re-order it a few times, then declare the stage ready.
         if attempt < 3 {
@@ -456,6 +471,13 @@ enum WindowArranger {
                     completion: completion
                 )
             }
+            return
+        }
+
+        if let realCall = session.call,
+           let target = realCallTarget,
+           !frame(of: realCall.element, matches: target) {
+            finishFailure(ArrangeError.couldNotMove(realCall.name), completion: completion)
             return
         }
 
@@ -595,6 +617,9 @@ enum WindowArranger {
             if session.usesExistingPageFullscreen {
                 // Cinema cleanup restores Netflix's own fullscreen tree; never
                 // toggle the browser window or destroy the user's page fullscreen.
+                if let call = session.call {
+                    restoreManagedWindow(call, generation: generation)
+                }
                 if let frame = session.fakeCallFrame { FakeCall.shared.position(frame: frame) }
                 return
             }
@@ -654,6 +679,9 @@ enum WindowArranger {
                     guard restoreGeneration == generation else { return }
                     setBrowserToolbarAlwaysShown(true, for: session.playerChoice)
                 }
+            }
+            if let call = session.call {
+                restoreManagedWindow(call, generation: generation)
             }
             if let frame = session.fakeCallFrame { FakeCall.shared.position(frame: frame) }
             return
@@ -1009,6 +1037,36 @@ enum WindowArranger {
         )
     }
 
+    /// FaceTime's live-call window already opts into macOS full-screen Spaces.
+    /// Accessibility can therefore place it inside the black column without
+    /// leaving the browser's page fullscreen or duplicating/capturing the call.
+    private static func pageFullscreenCallFrame(
+        on screen: NSScreen,
+        originalFrame: CGRect
+    ) -> CGRect {
+        let usable = visibleAXFrame(for: screen)
+        let columnWidth = min(460, max(340, usable.width * 0.26))
+        let inset: CGFloat = 8
+        let available = CGSize(
+            width: max(220, columnWidth - inset * 2),
+            height: max(140, usable.height - inset * 2)
+        )
+        let ratio = originalFrame.width > 0 && originalFrame.height > 0
+            ? originalFrame.width / originalFrame.height
+            : 4.0 / 3.0
+        var size = CGSize(width: available.width, height: available.width / ratio)
+        if size.height > available.height {
+            size.height = available.height
+            size.width = available.height * ratio
+        }
+        return CGRect(
+            x: usable.maxX - size.width - inset,
+            y: usable.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+
     private static func cocoaRect(fromAX rect: CGRect, on screen: NSScreen) -> NSRect {
         guard let display = displayBounds(for: screen) else { return rect }
         let localX = rect.minX - display.minX
@@ -1034,8 +1092,14 @@ private extension WindowArranger.CallTarget {
     }
 
     var supportsOwnedFullscreenStage: Bool {
-        if case .app = self { return false }
-        return true
+        switch self {
+        case .app(let app):
+            // FaceTime's call/PiP window is a full-screen auxiliary window and
+            // can be raised and resized while Safari/Chrome owns the Space.
+            return app.bundleID == "com.apple.FaceTime"
+        case .fake, .none:
+            return true
+        }
     }
 }
 
