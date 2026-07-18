@@ -110,7 +110,7 @@ if [ "$REMOTE_TAG" != "$HEAD_COMMIT" ]; then
   exit 1
 fi
 
-echo "▸ Uploading a draft release to $REPO…"
+echo "▸ Uploading a draft release to ${REPO}…"
 gh release create "$TAG" "$ZIP" "$DMG" \
   --repo "$REPO" \
   --verify-tag \
