@@ -1,4 +1,4 @@
-# Sofa Theater browser helper 0.1.27
+# Sofa Theater browser helper 0.1.28
 
 This helper contains no chat, account, analytics, or visible toolbar UI. It only
 applies Sofa's reversible Theater layout to Netflix and YouTube. While Theater

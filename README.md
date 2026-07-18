@@ -45,7 +45,7 @@ gh repo create sofa --public --source=. --remote=origin --push
 Once the source and `Info.plist` already contain the new version, publish it with:
 
 ```bash
-./release.sh 0.1.27 "Independent FaceTime call volume"
+./release.sh 0.1.28 "Shared content handoff and working FaceTime call volume"
 ```
 
 The release script requires a clean `master` already pushed to GitHub. It builds

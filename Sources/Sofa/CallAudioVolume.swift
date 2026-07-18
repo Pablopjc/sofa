@@ -1,7 +1,7 @@
 import AudioToolbox
 import Foundation
 
-/// Applies gain to FaceTime's outgoing audio without changing the movie or the
+/// Applies gain to FaceTime's received call audio without changing the movie or the
 /// Mac output volume. Core Audio's process tap mutes only the tapped source
 /// while it is being read; Sofa immediately writes the scaled samples back to
 /// the same physical output. Samples are never stored or sent over the network.
@@ -14,6 +14,8 @@ final class CallAudioVolume: @unchecked Sendable {
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
     private var ioProcID: AudioDeviceIOProcID?
+    private var renderCallbacks = 0
+    private var verificationID = UUID()
 
     private init() {}
 
@@ -28,8 +30,23 @@ final class CallAudioVolume: @unchecked Sendable {
             }
 
             do {
-                if tapID == kAudioObjectUnknown { try startLocked() }
-                DispatchQueue.main.async { completion(.success(())) }
+                if tapID == kAudioObjectUnknown {
+                    try startLocked()
+                    let checkID = verificationID
+                    queue.asyncAfter(deadline: .now() + 1.5) { [self] in
+                        guard verificationID == checkID else { return }
+                        if renderCallbacks == 0 {
+                            stopLocked()
+                            DispatchQueue.main.async {
+                                completion(.failure(CallAudioError.noAudioCaptured))
+                            }
+                        } else {
+                            DispatchQueue.main.async { completion(.success(())) }
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.async { completion(.success(())) }
+                }
             } catch {
                 stopLocked()
                 DispatchQueue.main.async { completion(.failure(error)) }
@@ -45,6 +62,8 @@ final class CallAudioVolume: @unchecked Sendable {
     }
 
     private func startLocked() throws {
+        renderCallbacks = 0
+        verificationID = UUID()
         let processIDs = try faceTimeAudioProcesses()
         if #unavailable(macOS 26.0), processIDs.isEmpty {
             throw CallAudioError.noFaceTimeAudio
@@ -61,6 +80,10 @@ final class CallAudioVolume: @unchecked Sendable {
             tap.bundleIDs = [
                 "com.apple.FaceTime",
                 "com.apple.FaceTime.FTConversationService",
+                // On current macOS releases the remote participant's audio is
+                // rendered by these FaceTime system services, not the UI app.
+                "com.apple.avconferenced",
+                "com.apple.TelephonyUtilities",
             ]
             tap.isProcessRestoreEnabled = true
         }
@@ -141,6 +164,7 @@ final class CallAudioVolume: @unchecked Sendable {
         input: UnsafePointer<AudioBufferList>,
         output: UnsafeMutablePointer<AudioBufferList>
     ) {
+        renderCallbacks += 1
         let inputs = UnsafeMutableAudioBufferListPointer(
             UnsafeMutablePointer(mutating: input)
         )
@@ -209,6 +233,7 @@ final class CallAudioVolume: @unchecked Sendable {
     }
 
     private func stopLocked() {
+        verificationID = UUID()
         if aggregateDeviceID != kAudioObjectUnknown {
             _ = AudioDeviceStop(aggregateDeviceID, ioProcID)
             if let ioProcID {
@@ -252,7 +277,10 @@ final class CallAudioVolume: @unchecked Sendable {
                 of: objectID,
                 selector: kAudioProcessPropertyBundleID
             ) else { return false }
-            return bundleID == "com.apple.FaceTime" || bundleID.contains("FaceTime")
+            return bundleID == "com.apple.FaceTime" ||
+                bundleID.contains("FaceTime") ||
+                bundleID == "com.apple.avconferenced" ||
+                bundleID == "com.apple.TelephonyUtilities"
         }
     }
 
@@ -328,6 +356,7 @@ private extension AudioStreamBasicDescription {
 
 private enum CallAudioError: LocalizedError {
     case noFaceTimeAudio
+    case noAudioCaptured
     case noOutput
     case unsupportedFormat
     case coreAudio(String, OSStatus)
@@ -336,6 +365,8 @@ private enum CallAudioError: LocalizedError {
         switch self {
         case .noFaceTimeAudio:
             return "FaceTime is not sending audio yet. Start the call and try again."
+        case .noAudioCaptured:
+            return "FaceTime audio was not detected. Keep the call active and allow System Audio Recording for Sofa."
         case .noOutput:
             return "Sofa could not find the current audio output."
         case .unsupportedFormat:

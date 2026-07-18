@@ -12,6 +12,7 @@ final class PlayerBridge {
     private var lastState: (time: Double, playing: Bool, at: Date)?
     private var suppressUntil = Date.distantPast
     private var lastTickSent = Date.distantPast
+    private var lastPublishedMetadata: String?
     private let queue = DispatchQueue(label: "sofa.playerbridge")
 
     /// Cinema must be removed from the tab that entered it, not whichever tab
@@ -68,18 +69,26 @@ final class PlayerBridge {
     // with a loop to avoid nested quotes inside the AppleScript string.
     private static var browserGetJS: String {
         "(function(){\(jsHelpers)" +
-        "var v=bv();var t=document.title||'';" +
+        "var v=bv();var t=document.title||'';var mediaURL=location.href;" +
         "var poster='';var ms=document.getElementsByTagName('meta');" +
         "for(var i=0;i<ms.length;i++){var pr=ms[i].getAttribute('property')||ms[i].getAttribute('name');" +
         "if(pr==='og:image'||pr==='twitter:image'){poster=ms[i].content;break}}" +
         "if(!poster&&v&&v.poster)poster=v.poster;" +
+        "try{var md=navigator.mediaSession&&navigator.mediaSession.metadata;if(md){" +
+        "if(md.title)t=md.title+(md.artist?' — '+md.artist:'');" +
+        "if(md.artwork&&md.artwork.length)poster=md.artwork[md.artwork.length-1].src||poster}}catch(e){}" +
         // YouTube is a single-page app: its og:image often stays on the logo
         // after in-app navigation, so derive the current video's thumbnail
         // straight from the ?v= id instead.
         "if(location.hostname.indexOf('youtube')>-1){var m=location.search.match(/[?&]v=([^&]+)/);" +
-        "if(m)poster='https://i.ytimg.com/vi/'+m[1]+'/hqdefault.jpg'}" +
-        "if(onNF){var p=nfp();if(p)return (p.getCurrentTime()/1000)+'|'+(v?String(!v.paused):'false')+'|'+poster+'|'+t}" +
-        "return v?v.currentTime+'|'+(!v.paused)+'|'+poster+'|'+t:'none'})()"
+        "try{var vd=document.querySelector('#movie_player').getVideoData();if(vd&&vd.title)t=vd.title;if(vd&&vd.video_id)m=[null,vd.video_id]}catch(e){}" +
+        "if(m){poster='https://i.ytimg.com/vi/'+m[1]+'/hqdefault.jpg';mediaURL='https://www.youtube.com/watch?v='+m[1]}}" +
+        "if(onNF){var nm=location.pathname.match(/\\/watch\\/(\\d+)/);if(nm)mediaURL=location.origin+'/watch/'+nm[1];" +
+        "var sels=['[data-uia=video-title]','[data-uia=episode-title]','.video-title'];" +
+        "for(var j=0;j<sels.length;j++){var el=document.querySelector(sels[j]);if(el&&el.innerText.trim()){t=el.innerText.trim().replace(/\\s*\\n\\s*/g,' — ');break}}}" +
+        "var p=onNF?nfp():null;var tm=p?p.getCurrentTime()/1000:(v?v.currentTime:0);" +
+        "if(!v&&!p)return 'none';var data={time:tm,playing:v?!v.paused:false,poster:poster,title:t,url:mediaURL};" +
+        "return 'SOFAJSON|'+encodeURIComponent(JSON.stringify(data))})()"
     }
 
     private static func browserCmdJS(_ cmd: String) -> String {
@@ -127,11 +136,11 @@ final class PlayerBridge {
         let reserve = reserveCallColumn ? "true" : "false"
         return
             "(function(){var d=document.documentElement;if(!d)return 'SOFA_ERR|no-document';" +
-            "if(d.getAttribute('data-sofa-theater-helper')!=='0.1.27-facetime-audio'){\(theaterHelperBootstrapJS)}" +
+            "if(d.getAttribute('data-sofa-theater-helper')!=='0.1.28-shared-media'){\(theaterHelperBootstrapJS)}" +
             "var w=\(reserve)?'auto':'0';" +
             "d.setAttribute('data-sofa-theater-command','\(command)|'+w);" +
             "d.removeAttribute('data-sofa-theater-status');" +
-            "document.dispatchEvent(new Event('sofa-theater-command-0.1.27-facetime-audio'));" +
+            "document.dispatchEvent(new Event('sofa-theater-command-0.1.28-shared-media'));" +
             "return d.getAttribute('data-sofa-theater-status')||'SOFA_ERR|helper-no-response'})()"
     }
 
@@ -546,6 +555,7 @@ final class PlayerBridge {
         stop()
         self.player = player
         lastState = nil
+        lastPublishedMetadata = nil
         timer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: true) { [weak self] _ in
             self?.poll()
         }
@@ -556,6 +566,7 @@ final class PlayerBridge {
         timer = nil
         player = nil
         lastState = nil
+        lastPublishedMetadata = nil
     }
 
     // MARK: - Polling (detect local changes → broadcast)
@@ -575,6 +586,7 @@ final class PlayerBridge {
                 AppState.shared.extLive = .nothingOpen
                 AppState.shared.nowPlaying = nil
                 AppState.shared.nowPlayingPoster = nil
+                AppState.shared.nowPlayingURL = nil
                 self.lastState = nil
             }
             return
@@ -612,26 +624,23 @@ final class PlayerBridge {
             return
         }
 
-        // "time|playing|poster|title" — split with a limit so a title
-        // containing a pipe (some pages do) can't corrupt the parse; it's last.
-        let parts = out.split(separator: "|", maxSplits: 3, omittingEmptySubsequences: false)
-        guard parts.count >= 2,
-              let time = Double(parts[0].replacingOccurrences(of: ",", with: ".")),
-              time.isFinite else {
+        let media = parseMediaResult(out)
+        guard let media else {
             state.extLive = .nothingOpen
             lastState = nil
             return
         }
-        let playing = parts[1].trimmingCharacters(in: .whitespaces) == "true"
+        let time = media.time
+        let playing = media.playing
         state.extLive = .playing(time: time, isPlaying: playing)
-
-        let poster = parts.count >= 3
-            ? String(parts[2]).trimmingCharacters(in: .whitespacesAndNewlines)
-            : ""
-        let title = parts.count >= 4
-            ? String(parts[3]).trimmingCharacters(in: .whitespacesAndNewlines)
-            : ""
-        updateNowPlaying(title: title, poster: poster, state: state)
+        updateNowPlaying(
+            title: media.title,
+            poster: media.poster,
+            url: media.url,
+            time: time,
+            playing: playing,
+            state: state
+        )
 
         let now = Date()
         if let last = lastState, now >= suppressUntil {
@@ -652,15 +661,91 @@ final class PlayerBridge {
     /// Publishes the title + poster locally and tells the room, but only when
     /// the title actually changes — the poll runs every 0.7s.
     @MainActor
-    private func updateNowPlaying(title: String, poster: String, state: AppState) {
+    private func updateNowPlaying(
+        title: String,
+        poster: String,
+        url: String?,
+        time: Double,
+        playing: Bool,
+        state: AppState
+    ) {
         let cleanTitle = title.isEmpty ? nil : title
         let cleanPoster = poster.hasPrefix("http") ? poster : nil
+        let cleanURL = url.flatMap(Self.canonicalMediaURL)
         state.nowPlayingPoster = cleanPoster
-        guard cleanTitle != state.nowPlaying else { return }
+        state.nowPlayingURL = cleanURL
         state.nowPlaying = cleanTitle
+        let signature = [cleanTitle ?? "", cleanPoster ?? "", cleanURL ?? ""].joined(separator: "\u{1F}")
+        guard signature != lastPublishedMetadata else { return }
+        lastPublishedMetadata = signature
         if let cleanTitle {
-            state.sync.send(SyncMessage(type: "loaded", name: cleanTitle, art: cleanPoster))
+            state.sync.send(SyncMessage(
+                type: "loaded", time: time, playing: playing,
+                name: cleanTitle, art: cleanPoster, url: cleanURL
+            ))
         }
+    }
+
+    private struct MediaResult {
+        let time: Double
+        let playing: Bool
+        let poster: String
+        let title: String
+        let url: String?
+    }
+
+    private func parseMediaResult(_ output: String) -> MediaResult? {
+        if output.hasPrefix("SOFAJSON|"),
+           let decoded = String(output.dropFirst(9)).removingPercentEncoding,
+           let data = decoded.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let time = (object["time"] as? NSNumber)?.doubleValue,
+           time.isFinite {
+            return MediaResult(
+                time: time,
+                playing: (object["playing"] as? Bool) ?? false,
+                poster: object["poster"] as? String ?? "",
+                title: object["title"] as? String ?? "",
+                url: object["url"] as? String
+            )
+        }
+        let parts = output.split(separator: "|", maxSplits: 3, omittingEmptySubsequences: false)
+        guard parts.count >= 2,
+              let time = Double(parts[0].replacingOccurrences(of: ",", with: ".")),
+              time.isFinite else { return nil }
+        return MediaResult(
+            time: time,
+            playing: parts[1].trimmingCharacters(in: .whitespaces) == "true",
+            poster: parts.count >= 3 ? String(parts[2]).trimmingCharacters(in: .whitespacesAndNewlines) : "",
+            title: parts.count >= 4 ? String(parts[3]).trimmingCharacters(in: .whitespacesAndNewlines) : "",
+            url: nil
+        )
+    }
+
+    private static func canonicalMediaURL(_ raw: String) -> String? {
+        guard var components = URLComponents(string: raw),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              components.user == nil, components.password == nil else { return nil }
+        components.fragment = nil
+        let host = components.host?.lowercased() ?? ""
+        if host.contains("netflix.com"),
+           let match = components.path.range(of: #"/watch/\d+"#, options: .regularExpression) {
+            components.path = String(components.path[match])
+            components.query = nil
+        }
+        if host == "youtu.be" || host.hasSuffix("youtube.com") {
+            let id: String? = host == "youtu.be"
+                ? components.path.split(separator: "/").first.map(String.init)
+                : components.queryItems?.first(where: { $0.name == "v" })?.value
+            if let id, !id.isEmpty {
+                components.scheme = "https"
+                components.host = "www.youtube.com"
+                components.path = "/watch"
+                components.queryItems = [URLQueryItem(name: "v", value: id)]
+            }
+        }
+        return components.url?.absoluteString
     }
 
     // MARK: - Applying remote commands
@@ -694,12 +779,9 @@ final class PlayerBridge {
             }
         case "tick":
             osa(getScript(for: player), requiring: player) { [weak self] out, _ in
-                guard let self, let out, out != "none" else { return }
-                let parts = out.split(separator: "|")
-                guard parts.count >= 2,
-                      let cur = Double(parts[0].replacingOccurrences(of: ",", with: ".")),
-                      cur.isFinite,
-                      parts[1].trimmingCharacters(in: .whitespaces) == "true" else { return }
+                guard let self, let out, out != "none",
+                      let media = self.parseMediaResult(out), media.playing else { return }
+                let cur = media.time
                 let target = time + latency
                 if abs(cur - target) > 2 {
                     self.osa(
@@ -712,5 +794,70 @@ final class PlayerBridge {
             break
         }
         lastState = nil // resync baseline on next poll
+    }
+
+    /// Opens the friend's canonical page only after an explicit click, then
+    /// waits for the site's real player before seeking to the shared position.
+    func openRemoteMedia(url: URL, player: PlayerChoice, time: Double, playing: Bool) {
+        guard player.isBrowser,
+              let canonical = Self.canonicalMediaURL(url.absoluteString) else { return }
+        let escaped = canonical.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script: String
+        switch player {
+        case .safari:
+            script = "tell application \"Safari\" to open location \"\(escaped)\""
+        case .chrome:
+            script = "tell application \"Google Chrome\" to open location \"\(escaped)\""
+        default:
+            return
+        }
+        osa(script) { [weak self] _, error in
+            guard let self else { return }
+            if let error {
+                DispatchQueue.main.async {
+                    AppState.shared.showToast("Couldn’t open your friend’s video: \(error)")
+                }
+                return
+            }
+            self.waitForRemotePlayer(
+                player: player, time: time, playing: playing, attemptsRemaining: 30
+            )
+        }
+    }
+
+    private func waitForRemotePlayer(
+        player: PlayerChoice,
+        time: Double,
+        playing: Bool,
+        attemptsRemaining: Int
+    ) {
+        guard attemptsRemaining > 0 else {
+            DispatchQueue.main.async {
+                AppState.shared.showToast("The video page opened, but its player is not ready yet.")
+            }
+            return
+        }
+        queue.asyncAfter(deadline: .now() + 0.65) { [weak self] in
+            guard let self else { return }
+            let result = self.runOSA(self.getScript(for: player))
+            if let output = result.0, output != "none", self.parseMediaResult(output) != nil {
+                DispatchQueue.main.async {
+                    guard AppState.shared.playerChoice == player else { return }
+                    self.applyRemote(SyncMessage(
+                        type: "seek", time: time, playing: playing,
+                        name: AppState.shared.friendNowPlaying,
+                        art: AppState.shared.friendNowPlayingArt,
+                        url: AppState.shared.friendNowPlayingURL
+                    ))
+                    AppState.shared.showToast("Opened your friend’s video and synced the time.")
+                }
+            } else {
+                self.waitForRemotePlayer(
+                    player: player, time: time, playing: playing,
+                    attemptsRemaining: attemptsRemaining - 1
+                )
+            }
+        }
     }
 }

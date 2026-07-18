@@ -158,8 +158,13 @@ final class AppState: ObservableObject {
     /// What's playing here, and what our friend says is playing on their side.
     @Published var nowPlaying: String?
     @Published var nowPlayingPoster: String?
+    @Published var nowPlayingURL: String?
     @Published var friendNowPlaying: String?
     @Published var friendNowPlayingArt: String?
+    @Published var friendNowPlayingURL: String?
+    @Published var friendPlaybackTime: Double?
+    @Published var friendIsPlaying: Bool?
+    private var friendPlaybackUpdatedAt = Date()
 
     // Auto-detected active players (running apps), refreshed while in a room.
     @Published var detectedSources: [PlayerChoice] = []
@@ -440,8 +445,12 @@ final class AppState: ObservableObject {
         detectedCallApp = nil
         nowPlaying = nil
         nowPlayingPoster = nil
+        nowPlayingURL = nil
         friendNowPlaying = nil
         friendNowPlayingArt = nil
+        friendNowPlayingURL = nil
+        friendPlaybackTime = nil
+        friendIsPlaying = nil
         friends = []
     }
 
@@ -485,6 +494,76 @@ final class AppState: ObservableObject {
         callVolume = max(0, min(100, value))
         UserDefaults.standard.set(callVolume, forKey: "SofaFaceTimeVolume")
         scheduleCallVolume(callVolume)
+    }
+
+    func updateFriendPlayback(time: Double?, playing: Bool?, sentAt: Double?) {
+        if let time {
+            let networkAge = sentAt.map {
+                min(2, max(0, Date().timeIntervalSince1970 - $0 / 1000))
+            } ?? 0
+            friendPlaybackTime = time + ((playing ?? friendIsPlaying) == true ? networkAge : 0)
+            friendPlaybackUpdatedAt = Date()
+        }
+        if let playing { friendIsPlaying = playing }
+    }
+
+    var estimatedFriendPlaybackTime: Double? {
+        guard let friendPlaybackTime else { return nil }
+        return friendPlaybackTime + (friendIsPlaying == true
+            ? Date().timeIntervalSince(friendPlaybackUpdatedAt) : 0)
+    }
+
+    var friendMatchesLocalMedia: Bool {
+        if let local = nowPlayingURL, let remote = friendNowPlayingURL {
+            return local == remote
+        }
+        guard friendNowPlayingURL == nil,
+              let local = nowPlaying?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              let remote = friendNowPlaying?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        else { return false }
+        return !local.isEmpty && local == remote
+    }
+
+    func broadcastCurrentMedia() {
+        guard let name = nowPlaying else { return }
+        let playback: (Double, Bool)?
+        if case .playing(let time, let isPlaying) = extLive {
+            playback = (time, isPlaying)
+        } else {
+            playback = nil
+        }
+        sync.send(SyncMessage(
+            type: "loaded",
+            time: playback?.0,
+            playing: playback?.1,
+            name: name,
+            art: nowPlayingPoster,
+            url: nowPlayingURL
+        ))
+    }
+
+    func joinFriendPlayback() {
+        guard let urlString = friendNowPlayingURL, let url = URL(string: urlString) else {
+            showToast("This source can’t be opened automatically. Open the same title first, then Sofa will sync it.")
+            return
+        }
+        let browser: PlayerChoice
+        if playerChoice.isBrowser {
+            browser = playerChoice
+        } else if detectedSources.contains(.safari) {
+            browser = .safari
+        } else if detectedSources.contains(.chrome) {
+            browser = .chrome
+        } else {
+            browser = .safari
+        }
+        selectPlayer(browser)
+        PlayerBridge.shared.openRemoteMedia(
+            url: url,
+            player: browser,
+            time: estimatedFriendPlaybackTime ?? 0,
+            playing: friendIsPlaying ?? false
+        )
     }
 
     private func scheduleCallVolume(_ value: Double) {
@@ -761,6 +840,7 @@ final class AppState: ObservableObject {
             extLive = .searching
             nowPlaying = nil
             nowPlayingPoster = nil
+            nowPlayingURL = nil
             mediaActive = true
             PlayerBridge.shared.start(player: playerChoice)
         }

@@ -440,7 +440,8 @@ struct PlayerCard: View {
                     selected: state.playerChoice == player,
                     live: state.playerChoice == player ? state.extLive : nil,
                     title: state.playerChoice == player ? state.nowPlaying : nil,
-                    poster: state.playerChoice == player ? state.nowPlayingPoster : nil
+                    poster: state.playerChoice == player ? state.nowPlayingPoster : nil,
+                    together: state.playerChoice == player && state.friendMatchesLocalMedia
                 ) { state.selectPlayer(player) }
             }
 
@@ -457,22 +458,32 @@ struct PlayerCard: View {
             }
 
             // What the other side is watching, straight from their broadcast.
-            if let friendTitle = state.friendNowPlaying {
+            if let friendTitle = state.friendNowPlaying, !state.friendMatchesLocalMedia {
                 Divider().opacity(0.4)
-                HStack(spacing: 8) {
-                    RemoteImage(
-                        urlString: state.friendNowPlayingArt,
-                        fallback: NSImage(systemSymbolName: "sofa.fill", accessibilityDescription: nil)
-                    )
-                    .frame(width: 28, height: 28)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Your friend is watching")
-                            .font(.system(size: 10)).foregroundStyle(.tertiary)
-                        Text(friendTitle)
-                            .font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
+                Button { state.joinFriendPlayback() } label: {
+                    HStack(spacing: 8) {
+                        RemoteImage(
+                            urlString: state.friendNowPlayingArt,
+                            fallback: NSImage(systemSymbolName: "sofa.fill", accessibilityDescription: nil)
+                        )
+                        .frame(width: 28, height: 28)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(friendTitle)
+                                .font(.system(size: 12.5, weight: .medium))
+                                .lineLimit(1).truncationMode(.tail)
+                            Text(friendPlaybackText)
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.right.circle.fill")
+                            .foregroundStyle(Color.accentColor)
                     }
-                    Spacer(minLength: 0)
+                    .padding(.vertical, 5).padding(.horizontal, 7)
+                    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
 
             if state.detectedSources.isEmpty && state.playerChoice != .builtin {
@@ -532,6 +543,12 @@ struct PlayerCard: View {
         case .playing(let time, let isPlaying):
             return "\(isPlaying ? "▶" : "⏸")  \(Self.fmt(time)) · \(isPlaying ? "playing" : "paused") — synced"
         }
+    }
+
+    private var friendPlaybackText: String {
+        let time = state.estimatedFriendPlaybackTime.map(Self.fmt) ?? "--:--"
+        let status = state.friendIsPlaying == true ? "▶" : "⏸"
+        return "Your friend · \(status) \(time) · tap to watch together"
     }
 
     private var liveIsWarning: Bool {
@@ -634,6 +651,8 @@ struct SourceRow: View {
     var title: String?
     /// Content preview URL (og:image / cover art), shown instead of the app icon.
     var poster: String?
+    /// The remote peer reported this same canonical content URL.
+    var together = false
     let action: () -> Void
 
     var body: some View {
@@ -696,7 +715,8 @@ struct SourceRow: View {
             case .blocked: return "Needs permission — tap for setup"
             case .notAuthorized: return "Automation blocked — tap for setup"
             case .playing(let t, let playing):
-                return "\(playing ? "▶" : "⏸") \(PlayerCard.fmt(t)) · synced"
+                let prefix = together ? "Together · " : ""
+                return "\(prefix)\(playing ? "▶" : "⏸") \(PlayerCard.fmt(t)) · synced"
             }
         }
         if player == .builtin { return "Play a file inside Sofa" }

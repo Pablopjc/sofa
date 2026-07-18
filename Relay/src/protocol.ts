@@ -22,11 +22,11 @@ const encoder = new TextEncoder();
 const commonFields = new Set(["type", "from", "sentAt"]);
 const fieldsByType: Record<ClientMessageType, ReadonlySet<string>> = {
   hello: new Set(["token", "name"]),
-  loaded: new Set(["name", "art"]),
-  play: new Set(["time", "playing"]),
-  pause: new Set(["time", "playing"]),
-  seek: new Set(["time", "playing"]),
-  tick: new Set(["time", "playing"]),
+  loaded: new Set(["name", "art", "url", "time", "playing"]),
+  play: new Set(["time", "playing", "name", "art", "url"]),
+  pause: new Set(["time", "playing", "name", "art", "url"]),
+  seek: new Set(["time", "playing", "name", "art", "url"]),
+  tick: new Set(["time", "playing", "name", "art", "url"]),
   bye: new Set(),
 };
 const requiredFieldsByType: Record<ClientMessageType, readonly string[]> = {
@@ -116,9 +116,15 @@ export function parseClientFrame(frame: string | ArrayBuffer): ParseResult {
   }
   if (
     message.art !== undefined &&
-    (typeof message.art !== "string" || message.art.length > 4_096)
+    (typeof message.art !== "string" || message.art.length > 4_096 || !isSafeWebURL(message.art))
   ) {
     return { ok: false, reason: "invalid_art" };
+  }
+  if (
+    message.url !== undefined &&
+    (typeof message.url !== "string" || message.url.length > 4_096 || !isSafeWebURL(message.url))
+  ) {
+    return { ok: false, reason: "invalid_url" };
   }
   if (
     message.time !== undefined &&
@@ -137,6 +143,16 @@ export function parseClientFrame(frame: string | ArrayBuffer): ParseResult {
     ok: true,
     message: message as JsonObject & { type: ClientMessageType },
   };
+}
+
+function isSafeWebURL(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "https:" || url.protocol === "http:") &&
+      url.username === "" && url.password === "";
+  } catch {
+    return false;
+  }
 }
 
 export function consumeRateLimit(state: RateState, now: number): boolean {

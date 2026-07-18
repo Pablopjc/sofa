@@ -42,6 +42,20 @@ describe("relay protocol", () => {
       });
     }
     expect(parseClientFrame('{"type":"seek","time":12,"playing":true}').ok).toBe(true);
+    expect(parseClientFrame(JSON.stringify({
+      type: "loaded",
+      name: "Episode 4",
+      art: "https://images.example/poster.jpg",
+      url: "https://www.netflix.com/watch/1234",
+      time: 42,
+      playing: true,
+    })).ok).toBe(true);
+    expect(parseClientFrame(JSON.stringify({
+      type: "loaded", name: "bad", url: "javascript:alert(1)",
+    }))).toEqual({ ok: false, reason: "invalid_url" });
+    expect(parseClientFrame(JSON.stringify({
+      type: "loaded", name: "bad", art: "file:///tmp/poster.png",
+    }))).toEqual({ ok: false, reason: "invalid_art" });
   });
 
   it("rejects binary and frames larger than 16 KiB", () => {

@@ -9,6 +9,7 @@ struct SyncMessage {
     var playing: Bool?
     var name: String?
     var art: String?      // poster / artwork URL
+    var url: String?      // canonical http(s) content URL
     var token: String?    // room secret, presented in "hello"
     var count: Int?
     var from: String?
@@ -31,6 +32,16 @@ struct SyncMessage {
             message.art = art
         } else {
             message.art = nil
+        }
+        if let url, url.utf16.count <= 4_096,
+           var components = URLComponents(string: url),
+           let scheme = components.scheme?.lowercased(),
+           scheme == "http" || scheme == "https",
+           components.user == nil, components.password == nil {
+            components.fragment = nil
+            message.url = components.url?.absoluteString
+        } else {
+            message.url = nil
         }
         if let time {
             message.time = time.isFinite ? min(1_000_000_000, max(0, time)) : nil
@@ -68,6 +79,7 @@ struct SyncMessage {
         if let playing = message.playing { dict["playing"] = playing }
         if let name = message.name { dict["name"] = name }
         if let art = message.art { dict["art"] = art }
+        if let url = message.url { dict["url"] = url }
         if let token = message.token { dict["token"] = token }
         if let count = message.count { dict["count"] = count }
         if let from = message.from { dict["from"] = from }
@@ -84,6 +96,7 @@ struct SyncMessage {
             playing: obj["playing"] as? Bool,
             name: obj["name"] as? String,
             art: obj["art"] as? String,
+            url: obj["url"] as? String,
             token: obj["token"] as? String,
             count: (obj["count"] as? NSNumber)?.intValue,
             from: obj["from"] as? String,
@@ -792,7 +805,13 @@ final class SyncEngine {
     /// Send a message to the room (stamped with our id and timestamp).
     func send(_ message: SyncMessage) {
         guard let state, state.inRoom else { return }
-        sendRaw(message)
+        var enriched = message
+        if ["play", "pause", "seek", "tick"].contains(message.type) {
+            enriched.name = enriched.name ?? state.nowPlaying
+            enriched.art = enriched.art ?? state.nowPlayingPoster
+            enriched.url = enriched.url ?? state.nowPlayingURL
+        }
+        sendRaw(enriched)
     }
 
     /// Like send(), but also usable during the handshake (before inRoom).
@@ -833,6 +852,7 @@ final class SyncEngine {
                     // Introduce ourselves back so latecomers learn our name too.
                     if isNew {
                         sendRaw(SyncMessage(type: "hello", name: state.displayName))
+                        state.broadcastCurrentMedia()
                     }
                 }
             case "bye":
@@ -842,11 +862,24 @@ final class SyncEngine {
             case "loaded":
                 let name = msg.name ?? "media"
                 state.friendNowPlayingArt = msg.art
+                state.friendNowPlayingURL = msg.url
+                state.updateFriendPlayback(time: msg.time, playing: msg.playing, sentAt: msg.sentAt)
                 if state.friendNowPlaying != name {
                     state.friendNowPlaying = name
                     state.showToast("Your friend is watching “\(name)”")
                 }
             case "play", "pause", "seek", "tick":
+                if let name = msg.name { state.friendNowPlaying = name }
+                if let art = msg.art { state.friendNowPlayingArt = art }
+                if let url = msg.url { state.friendNowPlayingURL = url }
+                state.updateFriendPlayback(
+                    time: msg.time,
+                    playing: msg.playing ?? (msg.type == "play" ? true : (msg.type == "pause" ? false : nil)),
+                    sentAt: msg.sentAt
+                )
+                let sameContent = msg.url == nil || state.nowPlayingURL == nil ||
+                    msg.url == state.nowPlayingURL
+                guard sameContent else { break }
                 if state.playerChoice != .builtin {
                     PlayerBridge.shared.applyRemote(msg)
                 } else {

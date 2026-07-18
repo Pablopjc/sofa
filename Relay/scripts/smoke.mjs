@@ -82,6 +82,19 @@ assert.equal("token" in joined, false);
 await first.inbox.next((message) => message.type === "peers" && message.count === 2);
 await second.inbox.next((message) => message.type === "peers" && message.count === 2);
 
+second.socket.send(JSON.stringify({
+  type: "loaded",
+  name: "Shared episode",
+  art: "https://images.example/poster.jpg",
+  url: "https://www.netflix.com/watch/1234",
+  time: 19,
+  playing: false,
+}));
+const loaded = await first.inbox.next((message) => message.type === "loaded");
+assert.equal(loaded.name, "Shared episode");
+assert.equal(loaded.url, "https://www.netflix.com/watch/1234");
+assert.equal(loaded.time, 19);
+
 second.socket.send(
   JSON.stringify({ type: "play", time: 42, sentAt: Date.now(), from: "spoofed" }),
 );
