@@ -17,7 +17,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.26</string>
+	<string>0.1.27</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -30,7 +30,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>0.1.26</string>
+	<string>0.1.27</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.entertainment</string>
 	<key>LSMinimumSystemVersion</key>
@@ -39,6 +39,8 @@
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Sofa controls your media player (QuickTime, VLC, Music, Spotify, your browser) to keep playback in sync with your friends.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Sofa processes only FaceTime audio locally so you can lower the call without changing the movie volume. Audio is never saved or sent.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Pablo</string>
 	<key>NSPrincipalClass</key>

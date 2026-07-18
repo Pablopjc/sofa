@@ -291,6 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         PlayerBridge.shared.stop()
+        AppState.shared.stopCallAudio()
         let restoredTheater = AppState.shared.prepareTheaterForTermination()
         AppState.shared.sync.stop()
         // The browser Space transition owns the animation, but the saved frame

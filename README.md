@@ -10,7 +10,9 @@ The Electron original lives in `../Sofa` and is installed as **Sofa Legacy.app**
 - **Local mode remains available**: the embedded WebSocket relay on port 7420 still powers Test Zone, same-Wi-Fi parties and old invite links.
 - **Syncs your real players**: QuickTime, VLC, Chrome/Safari (YouTube, Netflix via its internal player API, Disney+…), Apple Music, Spotify — via AppleScript polling, plus a built-in AVPlayer with drag & drop and a bundled test video.
 - Play/pause/seek mirroring with latency compensation and periodic drift correction.
-- Audio card: built-in movie volume + system volume slider.
+- Audio card: built-in movie volume, system volume, and an optional independent
+  FaceTime-call slider. FaceTime samples are attenuated in memory only and are
+  never saved or sent; macOS asks for System Audio Recording permission once.
 - Adaptive light/dark app icon (macOS 26+), template menu bar icon, popover-material panel.
 
 ## Build
@@ -43,7 +45,7 @@ gh repo create sofa --public --source=. --remote=origin --push
 Once the source and `Info.plist` already contain the new version, publish it with:
 
 ```bash
-./release.sh 0.1.26 "FaceTime support in Theater mode"
+./release.sh 0.1.27 "Independent FaceTime call volume"
 ```
 
 The release script requires a clean `master` already pushed to GitHub. It builds
@@ -65,6 +67,7 @@ Requires Xcode command line tools (Swift 6+). If Xcode 26+ is installed, the bui
 - `Sources/Sofa/SyncEngine.swift` — public WSS + local WebSocket clients, embedded LAN relay and JSON protocol
 - `Sources/Sofa/RoomTarget.swift` — strict parser for versioned online and legacy LAN invitations
 - `Sources/Sofa/PlayerBridge.swift` — AppleScript bridge to external players
+- `Sources/Sofa/CallAudioVolume.swift` — local Core Audio FaceTime attenuator
 - `Sources/Sofa/BuiltinPlayer.swift` — AVPlayer with sync events
 - `Sources/Sofa/Views.swift` — SwiftUI UI (idle + room)
 - `Resources/` — demo video, icns, Icon Composer bundle

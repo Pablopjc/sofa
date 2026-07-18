@@ -914,10 +914,17 @@ struct AudioCard: View {
                     state.builtin.volume = Float(v / 100)
                 }
             }
+            if state.detectedCallApp?.bundleID == "com.apple.FaceTime" {
+                SliderRow(label: "Call", value: $state.callVolume, range: 0...100, suffix: "%") { v in
+                    state.setCallVolume(v)
+                }
+            }
             SliderRow(label: "Mac", value: $state.systemVolume, range: 0...100, suffix: "%") { v in
                 SystemVolume.set(Int(v))
             }
-            Text("On a call? Lower the Mac volume — the movie player’s own volume stays independent.")
+            Text(state.detectedCallApp?.bundleID == "com.apple.FaceTime"
+                 ? "Call changes only FaceTime. Audio is processed locally and is never saved or sent."
+                 : "Start a FaceTime call to control its volume independently from the movie.")
                 .font(.system(size: 11)).foregroundStyle(.tertiary)
         }
     }

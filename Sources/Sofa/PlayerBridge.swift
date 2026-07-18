@@ -127,11 +127,11 @@ final class PlayerBridge {
         let reserve = reserveCallColumn ? "true" : "false"
         return
             "(function(){var d=document.documentElement;if(!d)return 'SOFA_ERR|no-document';" +
-            "if(d.getAttribute('data-sofa-theater-helper')!=='0.1.26-pagefs-facetime'){\(theaterHelperBootstrapJS)}" +
+            "if(d.getAttribute('data-sofa-theater-helper')!=='0.1.27-facetime-audio'){\(theaterHelperBootstrapJS)}" +
             "var w=\(reserve)?'auto':'0';" +
             "d.setAttribute('data-sofa-theater-command','\(command)|'+w);" +
             "d.removeAttribute('data-sofa-theater-status');" +
-            "document.dispatchEvent(new Event('sofa-theater-command-0.1.26-pagefs-facetime'));" +
+            "document.dispatchEvent(new Event('sofa-theater-command-0.1.27-facetime-audio'));" +
             "return d.getAttribute('data-sofa-theater-status')||'SOFA_ERR|helper-no-response'})()"
     }
 

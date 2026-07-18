@@ -172,6 +172,10 @@ final class AppState: ObservableObject {
     // Audio
     @Published var systemVolume: Double = 50
     @Published var movieVolume: Double = 100
+    @Published var callVolume: Double = UserDefaults.standard.object(
+        forKey: "SofaFaceTimeVolume"
+    ) as? Double ?? 100
+    private var callVolumeWorkItem: DispatchWorkItem?
 
     // Toast
     @Published var toast: String?
@@ -454,6 +458,7 @@ final class AppState: ObservableObject {
     func stopDetecting() {
         detectTimer?.invalidate()
         detectTimer = nil
+        stopCallAudio()
         theaterAvailabilityProbeID = nil
         theaterAvailabilityChecking = false
         browserPageFullscreenReady = false
@@ -465,8 +470,65 @@ final class AppState: ObservableObject {
         let notice = MediaSourceDetector.runningUnsupported().first?.advice
         if notice != unsupportedNotice { unsupportedNotice = notice }
         let call = WindowArranger.runningCallApp()
-        if call?.bundleID != detectedCallApp?.bundleID { detectedCallApp = call }
+        if call?.bundleID != detectedCallApp?.bundleID {
+            detectedCallApp = call
+            if call?.bundleID == "com.apple.FaceTime", callVolume < 99.5 {
+                scheduleCallVolume(callVolume)
+            } else {
+                stopCallAudioProcessor()
+            }
+        }
         refreshTheaterAvailability()
+    }
+
+    func setCallVolume(_ value: Double) {
+        callVolume = max(0, min(100, value))
+        UserDefaults.standard.set(callVolume, forKey: "SofaFaceTimeVolume")
+        scheduleCallVolume(callVolume)
+    }
+
+    private func scheduleCallVolume(_ value: Double) {
+        callVolumeWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.applyCallVolume(value) }
+        callVolumeWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: item)
+    }
+
+    private func applyCallVolume(_ value: Double) {
+        guard detectedCallApp?.bundleID == "com.apple.FaceTime" else {
+            stopCallAudioProcessor()
+            return
+        }
+        guard #available(macOS 14.2, *) else {
+            callVolume = 100
+            showToast("Independent FaceTime volume requires macOS 14.2 or later.")
+            return
+        }
+        if value < 99.5,
+           !UserDefaults.standard.bool(forKey: "SofaExplainedAudioCapture") {
+            UserDefaults.standard.set(true, forKey: "SofaExplainedAudioCapture")
+            showToast("Allow Sofa to capture system audio. FaceTime is processed locally and never recorded.")
+        }
+        CallAudioVolume.shared.set(percent: value) { [weak self] result in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if case .failure(let error) = result {
+                    self.callVolume = 100
+                    UserDefaults.standard.set(100.0, forKey: "SofaFaceTimeVolume")
+                    self.showToast(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    func stopCallAudio() {
+        callVolumeWorkItem?.cancel()
+        callVolumeWorkItem = nil
+        stopCallAudioProcessor()
+    }
+
+    private func stopCallAudioProcessor() {
+        if #available(macOS 14.2, *) { CallAudioVolume.shared.stop() }
     }
 
     /// Checks the selected browser tab without changing its fullscreen state.

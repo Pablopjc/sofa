@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds, verifies and publishes a source-matched Sofa release. The app's
 # "Check for Updates…" reads the latest non-draft GitHub release.
-# Usage: ./release.sh 0.1.26 "What changed"
+# Usage: ./release.sh 0.1.27 "What changed"
 set -euo pipefail
 cd "$(dirname "$0")"
 
