@@ -121,6 +121,26 @@ struct TitleBar: View {
 struct IdleView: View {
     @ObservedObject var state = AppState.shared
 
+    private static let maximumDisplayNameLength = 40
+
+    private var displayName: Binding<String> {
+        Binding(
+            get: { state.displayName },
+            set: { value in
+                let disallowed = CharacterSet.controlCharacters.union(.newlines)
+                let singleLine = value.components(separatedBy: disallowed).joined(separator: " ")
+                state.displayName = singleLine
+                    .prefix(Self.maximumDisplayNameLength)
+                    .description
+            }
+        )
+    }
+
+    private func normalizeDisplayName() {
+        let normalized = state.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        state.displayName = normalized.isEmpty ? "Me" : normalized
+    }
+
     var body: some View {
         VStack(spacing: 14) {
             // Hero
@@ -144,24 +164,54 @@ struct IdleView: View {
                 AvatarView(name: state.displayName, size: 22)
                 Text("Watching as")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
-                TextField("Name", text: $state.displayName)
+                TextField("Name", text: displayName)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12, weight: .semibold))
-                    .fixedSize()
+                    .lineLimit(1)
+                    .frame(width: 112, alignment: .leading)
+                    .onSubmit { normalizeDisplayName() }
             }
             .padding(.horizontal, 10).padding(.vertical, 5)
             .background(Color.primary.opacity(0.05), in: Capsule())
 
             Button {
+                normalizeDisplayName()
                 state.hostRoom()
             } label: {
-                Label("Start a Watch Party", systemImage: "play.circle.fill")
+                HStack(spacing: 7) {
+                    if state.hosting {
+                        ProgressView().controlSize(.small)
+                        Text("Creating online party…")
+                    } else {
+                        Image(systemName: "play.circle.fill")
+                        Text("Start a Watch Party")
+                    }
+                }
                     .font(.system(size: 13, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 5)
             }
             .sofaProminentButton()
             .controlSize(.large)
+            .disabled(state.hosting || state.joining)
+
+            if let err = state.hostError {
+                Text(err)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Button {
+                normalizeDisplayName()
+                state.hostLANRoom()
+            } label: {
+                Label("Host on this local network instead", systemImage: "network")
+                    .font(.system(size: 10.5))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.tertiary)
+            .disabled(state.hosting || state.joining)
 
             HStack(spacing: 10) {
                 Rectangle().fill(.separator).frame(height: 1)
@@ -174,10 +224,17 @@ struct IdleView: View {
                 HStack(spacing: 8) {
                     TextField("Paste an invite link", text: $state.joinAddress)
                         .textFieldStyle(.roundedBorder)
-                        .onSubmit { state.join() }
-                    Button("Join") { state.join() }
+                        .onSubmit {
+                            normalizeDisplayName()
+                            state.join()
+                        }
+                        .disabled(state.hosting || state.joining)
+                    Button("Join") {
+                        normalizeDisplayName()
+                        state.join()
+                    }
                         .sofaGlassButton()
-                        .disabled(state.joining)
+                        .disabled(state.hosting || state.joining)
                 }
                 if let err = state.joinError {
                     Text(err).font(.system(size: 11)).foregroundStyle(.red)
@@ -198,6 +255,7 @@ struct IdleView: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .padding(.top, 2)
+            .disabled(state.hosting || state.joining)
         }
         .padding(.horizontal, 18).padding(.bottom, 14)
     }
@@ -284,9 +342,9 @@ struct Card<Content: View>: View {
 struct InviteCard: View {
     @ObservedObject var state = AppState.shared
 
-    /// The 6-char room code, pulled from the tail of the invite link.
+    /// The visible room ID is never the long capability secret in the link.
     private var roomCode: String {
-        state.inviteLink.split(separator: "/").last.map(String.init) ?? ""
+        state.inviteCode
     }
 
     var body: some View {
@@ -333,7 +391,9 @@ struct InviteCard: View {
                 ShareButton(link: state.inviteLink)
             }
 
-            Text("Only people with this link can join. Same Wi-Fi just works; across networks, use Tailscale or forward port 7420.")
+            Text(state.roomIsOnline
+                 ? "Works across networks. Sofa relays only sync controls — never video or call audio."
+                 : "Local party: friends must be on the same local network.")
                 .font(.system(size: 10.5)).foregroundStyle(.tertiary)
         }
     }
@@ -481,6 +541,7 @@ struct PlayerCard: View {
     }
 
     static func fmt(_ t: Double) -> String {
+        guard t.isFinite else { return "–:––" }
         let s = max(0, Int(t))
         let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec) : String(format: "%d:%02d", m, sec)
@@ -781,39 +842,48 @@ struct LayoutCard: View {
                 }
                 Spacer(minLength: 0)
             }
-            Button(state.theaterActive ? "Exit Theater" : "Enter Theater") {
+            Button(theaterButtonTitle) {
                 state.toggleTheater()
             }
             .sofaGlassButton()
-            .disabled(!state.theaterActive && state.playerChoice == .builtin)
+            .disabled(state.theaterTransitioning || (!state.theaterActive && !state.canEnterTheater))
         }
     }
 
     @ObservedObject private var fakeCall = FakeCall.shared
 
+    private var theaterButtonTitle: String {
+        if state.theaterTransitioning { return "Preparing Theater…" }
+        return state.theaterActive ? "Exit Theater" : "Enter Theater"
+    }
+
     private var headline: String {
+        if state.theaterTransitioning { return "Preparing the fullscreen overlay…" }
         if state.theaterActive { return "Theater is on" }
-        if let call = state.detectedCallApp { return "\(call.name) call detected" }
-        if fakeCall.visible { return "Test call window ready" }
-        return "No call — movie gets the whole stage"
+        if !state.playerChoice.isBrowser { return "Open a browser video first" }
+        if state.browserPageFullscreenReady {
+            return fakeCall.visible ? "Fullscreen and test call ready" : "Video fullscreen detected"
+        }
+        return "Press F in the video first"
     }
 
     private var subline: String {
+        if state.theaterTransitioning {
+            return "Keeping the fullscreen you opened and placing the call beside the video."
+        }
         if state.theaterActive {
-            return "Everything else is behind the curtain. Exit to get your desktop back."
+            return "Drag the edge between the video and black column to resize it. Exit Theater keeps the fullscreen opened with F."
         }
-        if state.playerChoice == .builtin {
-            return "Theater needs an external player like QuickTime or your browser."
+        if !state.playerChoice.isBrowser {
+            return "Choose Safari or Chrome, open YouTube or Netflix, and put the video in full screen."
         }
-        let browser = state.playerChoice == .chrome || state.playerChoice == .safari
-        let filled = browser ? "fills the window with the video (no page clutter)" : "makes the movie as big as it fits"
-        if state.detectedCallApp != nil {
-            return "Blacks out the desktop, \(filled), and keeps the call in a column beside it."
+        if !state.browserPageFullscreenReady {
+            return "In the video, press F (or its fullscreen button). Then open Sofa again — Theater will become available."
         }
         if fakeCall.visible {
-            return "Blacks out the desktop, \(filled), with the test call window beside it."
+            return "Keeps that exact fullscreen, reserves the right side, and floats a compact call there."
         }
-        return "Blacks out everything and \(filled). Start a call (FaceTime, Zoom, Discord…) and it gets its own column."
+        return "Fullscreen is ready. Show the test call window if you want it on the right, then enter Theater."
     }
 }
 

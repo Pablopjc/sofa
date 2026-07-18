@@ -78,7 +78,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.collectionBehavior = [
+            .canJoinAllApplications,
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .stationary,
+            .ignoresCycle,
+        ]
+
+        Publishers.CombineLatest3(
+            AppState.shared.$theaterActive,
+            AppState.shared.$theaterTransitioning,
+            AppState.shared.$browserPageFullscreenReady
+        )
+            .map { $0 || $1 || $2 }
+            .removeDuplicates()
+            .sink { [weak self] needsFullscreenLevel in
+                self?.panel.level = needsFullscreenLevel ? .screenSaver : .statusBar
+            }
+            .store(in: &cancellables)
 
         // Liquid Glass panel container (macOS 26+), with the classic popover
         // material as fallback on older systems.
@@ -223,8 +241,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showPanel() {
+        AppState.shared.refreshTheaterAvailability()
         resizePanelToFit()
         positionPanel()
+        // The viewer must open Sofa after pressing F, before Theater is active.
+        // Raise the panel whenever that page fullscreen is detected, and keep it
+        // raised through entrance/exit. Normal use stays at status-bar level.
+        panel.level = AppState.shared.theaterActive || AppState.shared.theaterTransitioning
+            || AppState.shared.browserPageFullscreenReady
+            ? .screenSaver
+            : .statusBar
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -247,7 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleInvite(urlString: String) {
         // Pass the raw link through: join() parses out address and room code.
-        guard !AppState.parseTarget(urlString).address.isEmpty else { return }
+        guard AppState.parseTarget(urlString) != nil else { return }
 
         if panel == nil {
             pendingJoin = urlString // app still launching
@@ -255,8 +281,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         showPanel()
         let state = AppState.shared
-        if state.inRoom {
-            state.showToast("Already in a party — leave it first to join another.")
+        if state.inRoom || state.hosting || state.joining {
+            state.showToast("Finish or leave the current party before opening another invite.")
         } else {
             state.joinAddress = urlString
             state.join(target: urlString)
@@ -264,8 +290,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        AppState.shared.sync.stop()
         PlayerBridge.shared.stop()
+        let restoredTheater = AppState.shared.prepareTheaterForTermination()
+        AppState.shared.sync.stop()
+        // The browser Space transition owns the animation, but the saved frame
+        // retries are on our main queue. Briefly drain it before the process
+        // exits so Safari/Chrome return exactly where the user left them.
+        if restoredTheater {
+            RunLoop.current.run(until: Date().addingTimeInterval(2.0))
+        }
     }
 }
-

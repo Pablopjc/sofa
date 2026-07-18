@@ -4,9 +4,9 @@ import Foundation
 /// Checks GitHub Releases for a newer build, downloads it, and swaps the app
 /// bundle in place.
 ///
-/// Deliberately lightweight instead of Sparkle: Sofa ships ad-hoc signed, and
-/// Sparkle's updater validates that the new bundle's code signature matches the
-/// old one — which ad-hoc signatures don't satisfy.
+/// Deliberately lightweight instead of Sparkle, but still fail-closed: every
+/// archive must be intact, have the requested bundle/version and carry exactly
+/// the same designated code-signing requirement as the installed Sofa app.
 @MainActor
 final class Updater: ObservableObject {
     static let shared = Updater()
@@ -89,9 +89,16 @@ final class Updater: ObservableObject {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tag = obj["tag_name"] as? String,
               let assets = obj["assets"] as? [[String: Any]] else { return nil }
-        let zips = assets.filter { ($0["name"] as? String)?.hasSuffix(".zip") == true }
-        // Prefer an explicitly mac-flavoured asset if several are attached.
-        let asset = zips.first { ($0["name"] as? String)?.contains("mac") == true } ?? zips.first
+        let zips = assets.filter { asset in
+            guard let name = asset["name"] as? String else { return false }
+            return name.hasSuffix(".zip") && !name.contains("Extension")
+                && !name.contains("source")
+        }
+        // The release also contains the friend-facing DMG and may contain the
+        // browser helper. Always choose the complete universal app archive.
+        let asset = zips.first {
+            ($0["name"] as? String)?.contains("universal-mac") == true
+        } ?? zips.first { ($0["name"] as? String)?.contains("mac") == true }
         guard let asset,
               let urlString = asset["browser_download_url"] as? String,
               let url = URL(string: urlString) else { return nil }
@@ -154,7 +161,12 @@ final class Updater: ObservableObject {
 
         Task.detached {
             do {
-                let script = try Self.prepareSwap(zip: zip, destination: destination, expectedID: expectedID)
+                let script = try Self.prepareSwap(
+                    zip: zip,
+                    destination: destination,
+                    expectedID: expectedID,
+                    expectedVersion: version
+                )
                 await MainActor.run {
                     // Detached so it outlives us, then quit: the script waits for
                     // this process to exit before replacing the bundle.
@@ -173,7 +185,12 @@ final class Updater: ObservableObject {
     }
 
     /// Unpacks the archive, sanity-checks it, and writes the swap script.
-    private nonisolated static func prepareSwap(zip: URL, destination: URL, expectedID: String?) throws -> URL {
+    private nonisolated static func prepareSwap(
+        zip: URL,
+        destination: URL,
+        expectedID: String?,
+        expectedVersion: String
+    ) throws -> URL {
         let fm = FileManager.default
         let work = fm.temporaryDirectory.appendingPathComponent("sofa-update-\(UUID().uuidString)")
         try fm.createDirectory(at: work, withIntermediateDirectories: true)
@@ -186,6 +203,17 @@ final class Updater: ObservableObject {
         }
         guard let bundle = Bundle(url: newApp), bundle.bundleIdentifier == expectedID else {
             throw UpdaterError.badArchive("The download isn’t a valid Sofa build.")
+        }
+        guard bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+                == expectedVersion else {
+            throw UpdaterError.badArchive("The downloaded app has the wrong version.")
+        }
+        // Detect truncated or modified bundles before the running app quits.
+        try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", newApp.path])
+        let installedRequirement = try designatedRequirement(for: destination)
+        let downloadedRequirement = try designatedRequirement(for: newApp)
+        guard downloadedRequirement == installedRequirement else {
+            throw UpdaterError.badArchive("The downloaded app was signed by a different Sofa identity.")
         }
 
         let backup = work.appendingPathComponent("previous.app")
@@ -229,5 +257,15 @@ final class Updater: ObservableObject {
             throw UpdaterError.command(out.isEmpty ? "Command failed: \(path)" : out)
         }
         return out
+    }
+
+    private nonisolated static func designatedRequirement(for app: URL) throws -> String {
+        let output = try run("/usr/bin/codesign", ["-dr", "-", app.path])
+        guard let requirement = output.split(separator: "\n")
+            .map(String.init)
+            .first(where: { $0.hasPrefix("designated => ") }) else {
+            throw UpdaterError.badArchive("Sofa's code-signing identity could not be verified.")
+        }
+        return requirement
     }
 }

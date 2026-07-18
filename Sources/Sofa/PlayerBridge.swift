@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 /// AppleScript bridge to external media players (QuickTime, VLC, browsers,
@@ -13,24 +14,53 @@ final class PlayerBridge {
     private var lastTickSent = Date.distantPast
     private let queue = DispatchQueue(label: "sofa.playerbridge")
 
+    /// Cinema must be removed from the tab that entered it, not whichever tab
+    /// happens to be active when the user leaves Theater.
+    private enum CinemaTarget {
+        case chrome(tabID: Int)
+        case safari
+
+        var player: PlayerChoice {
+            switch self {
+            case .chrome: return .chrome
+            case .safari: return .safari
+            }
+        }
+    }
+    /// Accessed only from `queue` (including the synchronous termination block).
+    private var cinemaTarget: CinemaTarget?
+
     // MARK: - Scripts
 
     // Browser JS payloads. No double quotes inside (embedded in AppleScript strings).
     // - On netflix.com, uses Netflix's internal player API (the DOM video ignores seeks there).
     // - bv() picks the *right* <video> when a page has several (ads, trailers,
-    //   thumbnail previews): prefer one that is playing, else the largest.
-    //   This is what makes Prime Video / Disney+ / YouTube reliable.
+    //   thumbnail previews). YouTube needs an explicit main-player selector:
+    //   its paused page can keep a playing recommendation preview whose video
+    //   looks more attractive than the actual movie to a generic heuristic.
     private static let jsHelpers =
         "function nfp(){try{var vp=netflix.appContext.state.playerApp.getAPI().videoPlayer;" +
         "var ids=vp.getAllPlayerSessionIds();if(!ids.length)return null;" +
         "return vp.getVideoPlayerBySessionId(ids[0])}catch(e){return null}}" +
+        "function npe(p){try{return p&&typeof p.getElement==='function'?p.getElement():null}catch(e){return null}}" +
         "var onNF=location.hostname.indexOf('netflix')>-1;" +
-        "function bv(){var vs=[].slice.call(document.querySelectorAll('video'));" +
+        "function vpreview(v){try{return !!v.closest('#inline-preview-player,ytd-video-preview," +
+        "ytd-video-preview-loader,[id*=preview],[class*=video-preview],[class*=inline-preview]')}catch(e){return false}}" +
+        "function vscore(v){var r=v.getBoundingClientRect(),c=getComputedStyle(v);" +
+        "if(c.display==='none'||c.visibility==='hidden'||Number(c.opacity)===0)return -1e15;" +
+        "var l=Math.max(0,r.left),t=Math.max(0,r.top),rr=Math.min(innerWidth,r.right),bb=Math.min(innerHeight,r.bottom);" +
+        "var a=Math.max(0,rr-l)*Math.max(0,bb-t),s=a;" +
+        "if(!v.paused&&!v.ended)s+=1e12;if(v.currentTime>1)s+=1e9;if(v.readyState>=2)s+=1e8;" +
+        "if(isFinite(v.duration)&&v.duration>30)s+=Math.min(v.duration,21600)*1000;" +
+        "if(vpreview(v))s-=1e14;return s}" +
+        "function bv(){if(onNF){var np=nfp(),ne=npe(np);" +
+        "var nv=ne&&(ne.tagName==='VIDEO'?ne:(ne.querySelector?ne.querySelector('video'):null));if(nv)return nv}" +
+        "var vs=[].slice.call(document.querySelectorAll('video'));" +
         "if(!vs.length)return null;" +
-        "var live=vs.filter(function(v){return !v.paused&&!v.ended});" +
-        "var pool=live.length?live:vs;" +
-        "pool.sort(function(a,b){var x=a.getBoundingClientRect(),y=b.getBoundingClientRect();" +
-        "return (y.width*y.height)-(x.width*x.height)});return pool[0]}"
+        "if(location.hostname.indexOf('youtube')>-1){" +
+        "var y=document.querySelector('#movie_player video.html5-main-video,#movie_player video');if(y)return y}" +
+        "var pool=vs.filter(function(v){return !vpreview(v)});if(!pool.length)return null;" +
+        "pool.sort(function(a,b){return vscore(b)-vscore(a)});return pool[0]}"
 
     // Also grabs the page's og:image (the poster the site advertises for link
     // previews) so Sofa can show the actual content instead of the app icon —
@@ -66,50 +96,285 @@ final class PlayerBridge {
         "var v=bv();if(v)v.currentTime=\(secs)})()"
     }
 
-    // Cinema mode: pin the playing video to fill the browser window (hiding the
-    // page's own chrome — header, sidebar, comments) without native fullscreen,
-    // so Theater can leave a call column beside it. Native fullscreen can't:
-    // macOS gives it the whole screen with no room for anything else.
-    private static let cinemaOnJS =
-        "(function(){\(jsHelpers)var v=bv();if(!v)return;" +
-        "var s=document.getElementById('sofa-cinema')||document.createElement('style');" +
-        "s.id='sofa-cinema';s.textContent='html,body{overflow:hidden!important;background:#000!important}';" +
-        "document.documentElement.appendChild(s);" +
-        "v.setAttribute('data-sofa-cinema','1');" +
-        "v.style.cssText='position:fixed!important;top:0!important;left:0!important;" +
-        "width:100vw!important;height:100vh!important;z-index:2147483647!important;" +
-        "background:#000!important;object-fit:contain!important'})()"
+    // Theater uses the same pattern as Teleparty: a tiny content helper marks
+    // the existing site player and applies reversible, site-specific CSS. It
+    // never reparents YouTube's #movie_player and never touches Netflix's DRM
+    // video/canvas/transform. The identical helper is also shipped as an MV3
+    // WebExtension; injecting it here is the zero-install fallback.
+    private static var theaterHelperBootstrapJS: String {
+        guard let url = Bundle.main.url(
+            forResource: "content",
+            withExtension: "js",
+            subdirectory: "BrowserExtension"
+        ), let source = try? String(contentsOf: url, encoding: .utf8) else {
+            return "return 'SOFA_ERR|helper-missing';"
+        }
+        return source
+    }
 
-    private static let cinemaOffJS =
-        "(function(){var s=document.getElementById('sofa-cinema');if(s)s.remove();" +
-        "var v=document.querySelector('video[data-sofa-cinema]');" +
-        "if(v){v.style.cssText='';v.removeAttribute('data-sofa-cinema')}})()"
+    /// JavaScript is embedded in an AppleScript string literal. Escaping the
+    /// literal lets us execute the helper source directly, which also satisfies
+    /// YouTube's Trusted Types policy (eval/atob is rejected there).
+    private static func appleScriptEscapedJavaScript(_ js: String) -> String {
+        js.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
 
-    /// Fill the browser window with the video (or undo it). No-op for non-browsers.
-    func setCinema(_ on: Bool, for player: PlayerChoice) {
-        let js = on ? Self.cinemaOnJS : Self.cinemaOffJS
+    private static func theaterCommandJS(
+        _ command: String,
+        reserveCallColumn: Bool = false
+    ) -> String {
+        let reserve = reserveCallColumn ? "true" : "false"
+        return
+            "(function(){var d=document.documentElement;if(!d)return 'SOFA_ERR|no-document';" +
+            "if(d.getAttribute('data-sofa-theater-helper')!=='0.1.25-pagefs-resize-expanded'){\(theaterHelperBootstrapJS)}" +
+            "var w=\(reserve)?'auto':'0';" +
+            "d.setAttribute('data-sofa-theater-command','\(command)|'+w);" +
+            "d.removeAttribute('data-sofa-theater-status');" +
+            "document.dispatchEvent(new Event('sofa-theater-command-0.1.25-pagefs-resize-expanded'));" +
+            "return d.getAttribute('data-sofa-theater-status')||'SOFA_ERR|helper-no-response'})()"
+    }
+
+    private static func cinemaOnJS(reserveCallColumn: Bool) -> String {
+        theaterCommandJS("on", reserveCallColumn: reserveCallColumn)
+    }
+
+    private static var cinemaOffJS: String { theaterCommandJS("off") }
+
+    private static let cinemaMarkerJS =
+        "(function(){return document.documentElement&&document.documentElement.hasAttribute('data-sofa-theater-active')?'SOFA_TARGET':'SOFA_NONE'})()"
+
+    /// Detects a page-owned fullscreen surface that already contains the site
+    /// player. Theater must preserve it for Sofa-owned calls, or leave it first
+    /// when arranging a third-party call on the desktop.
+    private static let compatiblePageFullscreenJS =
+        "(function(){var f=document.fullscreenElement||document.webkitFullscreenElement;" +
+        "if(!f)return 'SOFA_FALSE';var h=location.hostname.toLowerCase(),t=null;" +
+        "if(h==='youtube.com'||h.endsWith('.youtube.com'))t=document.querySelector('#movie_player');" +
+        "else if(h==='netflix.com'||h.endsWith('.netflix.com'))t=document.querySelector('.watch-video--player-view,[data-uia=watch-video]');" +
+        "if(!t)return 'SOFA_FALSE';return (f===document.documentElement||f===document.body||f===t||f.contains(t)||t.contains(f))?'SOFA_TRUE':'SOFA_FALSE'})()"
+
+    /// Captures Chrome's stable tab id with the result. Safari does not expose a
+    /// useful stable tab identifier, so its exit script searches for our private
+    /// marker without changing the selected tab or window.
+    private static func cinemaOnScript(for player: PlayerChoice, js: String) -> String {
+        let safeJS = appleScriptEscapedJavaScript(js)
         switch player {
-        case .chrome: osa(Self.chromeAS(js)) { _, _ in }
-        case .safari: osa(Self.safariAS(js)) { _, _ in }
-        default: break
+        case .chrome:
+            return """
+            if application "Google Chrome" is not running then return "SOFA_APP_NOT_RUNNING"
+            tell application "Google Chrome"
+                set targetTab to active tab of front window
+                set targetID to id of targetTab
+                set resultText to execute targetTab javascript "\(safeJS)"
+                return "SOFA_TARGET|chrome|" & (targetID as text) & "|" & resultText
+            end tell
+            """
+        case .safari:
+            return """
+            if application "Safari" is not running then return "SOFA_APP_NOT_RUNNING"
+            tell application "Safari"
+                set targetTab to current tab of front window
+                set resultText to do JavaScript "\(safeJS)" in targetTab
+                return "SOFA_TARGET|safari|" & resultText
+            end tell
+            """
+        default:
+            return "return \"SOFA_ERR|unsupported\""
         }
     }
 
-    // Leaves the page's own (HTML5) fullscreen — the kind YouTube's `f` or the
-    // video's ⛶ button triggers, which sends the browser to its own macOS Space.
-    // Theater's windowed cinema layout can't share a screen with that, so it
-    // must drop out of it first.
-    private static let exitFullscreenJS =
-        "(function(){try{" +
-        "if(document.fullscreenElement){document.exitFullscreen()}" +
-        "else if(document.webkitFullscreenElement){document.webkitExitFullscreen()}" +
-        "}catch(e){}})()"
+    private static func cinemaOffScript(for player: PlayerChoice, target: CinemaTarget?) -> String {
+        let safeOffJS = appleScriptEscapedJavaScript(cinemaOffJS)
+        switch target {
+        case .chrome(let tabID):
+            return """
+            if application "Google Chrome" is not running then return "SOFA_APP_NOT_RUNNING"
+            tell application "Google Chrome"
+                repeat with browserWindow in windows
+                    repeat with targetTab in tabs of browserWindow
+                        try
+                            if (id of targetTab as text) is "\(tabID)" then
+                                return execute targetTab javascript "\(safeOffJS)"
+                            end if
+                        end try
+                    end repeat
+                end repeat
+                return "SOFA_ERR|tab-gone"
+            end tell
+            """
+        case .safari:
+            return """
+            if application "Safari" is not running then return "SOFA_APP_NOT_RUNNING"
+            tell application "Safari"
+                repeat with browserWindow in windows
+                    repeat with targetTab in tabs of browserWindow
+                        try
+                            set marker to do JavaScript "\(cinemaMarkerJS)" in targetTab
+                            if marker is "SOFA_TARGET" then
+                                return do JavaScript "\(safeOffJS)" in targetTab
+                            end if
+                        end try
+                    end repeat
+                end repeat
+                return "SOFA_ERR|tab-gone"
+            end tell
+            """
+        case nil:
+            switch player {
+            case .chrome: return chromeAS(cinemaOffJS)
+            case .safari: return safariAS(cinemaOffJS)
+            default: return "return \"SOFA_OK|off|unsupported\""
+            }
+        }
+    }
 
-    func exitBrowserFullscreen(for player: PlayerChoice) {
+    private static func parseCinemaOn(output: String?, player: PlayerChoice) -> CinemaTarget? {
+        guard let output else { return nil }
         switch player {
-        case .chrome: osa(Self.chromeAS(Self.exitFullscreenJS)) { _, _ in }
-        case .safari: osa(Self.safariAS(Self.exitFullscreenJS)) { _, _ in }
-        default: break
+        case .chrome:
+            let prefix = "SOFA_TARGET|chrome|"
+            guard output.hasPrefix(prefix) else { return nil }
+            let remainder = output.dropFirst(prefix.count)
+            guard let separator = remainder.firstIndex(of: "|") else { return nil }
+            let idText = remainder[..<separator]
+            let result = remainder[remainder.index(after: separator)...]
+            guard let tabID = Int(idText), result.hasPrefix("SOFA_OK|on|"),
+                  result.hasSuffix("|pagefs") else { return nil }
+            return .chrome(tabID: tabID)
+        case .safari:
+            let prefix = "SOFA_TARGET|safari|"
+            let result = output.dropFirst(prefix.count)
+            guard output.hasPrefix(prefix), result.hasPrefix("SOFA_OK|on|"),
+                  result.hasSuffix("|pagefs") else { return nil }
+            return .safari
+        default:
+            return nil
+        }
+    }
+
+    private static func cinemaOffSucceeded(output: String?, error: String?) -> Bool {
+        guard error == nil, let output else { return false }
+        return output.hasPrefix("SOFA_OK|") || output.hasPrefix("SOFA_ERR|tab-gone")
+            || output == "SOFA_APP_NOT_RUNNING"
+    }
+
+    /// Fill the browser window with the video (or undo it). No-op for non-browsers.
+    func setCinema(
+        _ on: Bool,
+        for player: PlayerChoice,
+        reserveCallColumn: Bool = false,
+        completion: ((Bool) -> Void)? = nil
+    ) {
+        guard player == .chrome || player == .safari else {
+            DispatchQueue.main.async { completion?(true) }
+            return
+        }
+
+        queue.async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async { completion?(false) }
+                return
+            }
+
+            if on {
+                // A failed prior exit must never strand one tab while a second
+                // tab enters Cinema. Try the precise old target first.
+                if let oldTarget = self.cinemaTarget {
+                    if oldTarget.player.isRunning {
+                        let oldResult = self.runOSA(
+                            Self.cinemaOffScript(for: oldTarget.player, target: oldTarget)
+                        )
+                        guard Self.cinemaOffSucceeded(output: oldResult.0, error: oldResult.1) else {
+                            DispatchQueue.main.async { completion?(false) }
+                            return
+                        }
+                    }
+                    self.cinemaTarget = nil
+                }
+
+                guard player.isRunning else {
+                    DispatchQueue.main.async { completion?(false) }
+                    return
+                }
+                let js = Self.cinemaOnJS(reserveCallColumn: reserveCallColumn)
+                let result = self.runOSA(Self.cinemaOnScript(for: player, js: js))
+                if result.1 == nil,
+                   let parsed = Self.parseCinemaOn(output: result.0, player: player) {
+                    self.cinemaTarget = parsed
+                    DispatchQueue.main.async { completion?(true) }
+                } else {
+                    DispatchQueue.main.async { completion?(false) }
+                }
+                return
+            }
+
+            let effectivePlayer = self.cinemaTarget?.player ?? player
+            guard effectivePlayer.isRunning else {
+                self.cinemaTarget = nil
+                DispatchQueue.main.async { completion?(true) }
+                return
+            }
+            let result = self.runOSA(
+                Self.cinemaOffScript(for: effectivePlayer, target: self.cinemaTarget)
+            )
+            let ok = Self.cinemaOffSucceeded(output: result.0, error: result.1)
+            if ok { self.cinemaTarget = nil }
+            DispatchQueue.main.async { completion?(ok) }
+        }
+    }
+
+    /// AppKit does not keep an app alive for asynchronous cleanup once
+    /// `applicationWillTerminate` returns. Run the tiny restore script to
+    /// completion so quitting Sofa can never leave the website inside its DOM
+    /// stage until the tab is reloaded.
+    func clearCinemaBeforeTermination(for player: PlayerChoice?) {
+        // Serialize behind any pending Cinema-on script, then remove the exact
+        // target before AppKit lets the process terminate. This also runs after
+        // a normal Exit whose async off may still be queued.
+        queue.sync {
+            guard let effectivePlayer = cinemaTarget?.player ?? player,
+                  effectivePlayer == .chrome || effectivePlayer == .safari else { return }
+            guard effectivePlayer.isRunning else {
+                cinemaTarget = nil
+                return
+            }
+            let result = runOSA(
+                Self.cinemaOffScript(for: effectivePlayer, target: cinemaTarget),
+                timeout: 3.0
+            )
+            if Self.cinemaOffSucceeded(output: result.0, error: result.1) {
+                cinemaTarget = nil
+            }
+        }
+    }
+
+    func compatibleBrowserPageFullscreen(
+        for player: PlayerChoice,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard player.isBrowser, player.isRunning else {
+            DispatchQueue.main.async { completion(false) }
+            return
+        }
+        let finish: (String?, String?) -> Void = { output, error in
+            DispatchQueue.main.async { completion(error == nil && output == "SOFA_TRUE") }
+        }
+        switch player {
+        case .chrome:
+            osa(
+                Self.chromeAS(Self.compatiblePageFullscreenJS),
+                requiring: player,
+                completion: finish
+            )
+        case .safari:
+            osa(
+                Self.safariAS(Self.compatiblePageFullscreenJS),
+                requiring: player,
+                completion: finish
+            )
+        default:
+            DispatchQueue.main.async { completion(false) }
         }
     }
 
@@ -135,10 +400,14 @@ final class PlayerBridge {
     }
 
     private static func chromeAS(_ js: String) -> String {
-        "tell application \"Google Chrome\" to return execute active tab of front window javascript \"\(js)\""
+        let safeJS = appleScriptEscapedJavaScript(js)
+        return "if application \"Google Chrome\" is not running then return \"SOFA_APP_NOT_RUNNING\"\n"
+            + "tell application \"Google Chrome\" to return execute active tab of front window javascript \"\(safeJS)\""
     }
     private static func safariAS(_ js: String) -> String {
-        "tell application \"Safari\" to return do JavaScript \"\(js)\" in front document"
+        let safeJS = appleScriptEscapedJavaScript(js)
+        return "if application \"Safari\" is not running then return \"SOFA_APP_NOT_RUNNING\"\n"
+            + "tell application \"Safari\" to return do JavaScript \"\(safeJS)\" in front document"
     }
 
     private func getScript(for p: PlayerChoice) -> String {
@@ -216,31 +485,59 @@ final class PlayerBridge {
 
     /// Runs AppleScript via the osascript CLI off the main thread.
     /// Returns (output, errorText).
-    private func osa(_ script: String, completion: @escaping (String?, String?) -> Void) {
-        queue.async {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            proc.arguments = ["-e", script]
-            let out = Pipe(), err = Pipe()
-            proc.standardOutput = out
-            proc.standardError = err
-            do {
-                try proc.run()
-            } catch {
-                completion(nil, error.localizedDescription)
+    private func osa(
+        _ script: String,
+        requiring runningPlayer: PlayerChoice? = nil,
+        completion: @escaping (String?, String?) -> Void
+    ) {
+        queue.async { [weak self] in
+            guard let self else {
+                completion(nil, "Player bridge is unavailable")
                 return
             }
-            proc.waitUntilExit()
-            let stdout = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let stderr = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if proc.terminationStatus == 0 {
-                completion(stdout, nil)
-            } else {
-                completion(nil, stderr ?? "osascript failed")
+            if let runningPlayer, !runningPlayer.isRunning {
+                completion(nil, "SOFA_APP_NOT_RUNNING")
+                return
             }
+            let result = self.runOSA(script)
+            completion(result.0, result.1)
         }
+    }
+
+    /// `waitUntilExit()` can hang forever if a browser stops answering Apple
+    /// Events. Bound every command, including synchronous termination cleanup.
+    private func runOSA(_ script: String, timeout: TimeInterval = 5.0) -> (String?, String?) {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", script]
+        let out = Pipe(), err = Pipe()
+        proc.standardOutput = out
+        proc.standardError = err
+        let finished = DispatchSemaphore(value: 0)
+        proc.terminationHandler = { _ in finished.signal() }
+        do {
+            try proc.run()
+        } catch {
+            return (nil, error.localizedDescription)
+        }
+
+        if finished.wait(timeout: .now() + timeout) == .timedOut {
+            proc.terminate()
+            if finished.wait(timeout: .now() + 0.75) == .timedOut {
+                Darwin.kill(proc.processIdentifier, SIGKILL)
+                _ = finished.wait(timeout: .now() + 0.75)
+            }
+            return (nil, "osascript timed out")
+        }
+
+        let stdout = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let stderr = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if proc.terminationStatus == 0 {
+            return (stdout, nil)
+        }
+        return (nil, (stderr?.isEmpty == false ? stderr : nil) ?? "osascript failed")
     }
 
     // MARK: - Lifecycle
@@ -284,7 +581,7 @@ final class PlayerBridge {
         }
 
         polling = true
-        osa(getScript(for: player)) { [weak self] out, err in
+        osa(getScript(for: player), requiring: player) { [weak self] out, err in
             DispatchQueue.main.async {
                 self?.polling = false
                 self?.handlePollResult(player: player, out: out, err: err)
@@ -319,7 +616,8 @@ final class PlayerBridge {
         // containing a pipe (some pages do) can't corrupt the parse; it's last.
         let parts = out.split(separator: "|", maxSplits: 3, omittingEmptySubsequences: false)
         guard parts.count >= 2,
-              let time = Double(parts[0].replacingOccurrences(of: ",", with: ".")) else {
+              let time = Double(parts[0].replacingOccurrences(of: ",", with: ".")),
+              time.isFinite else {
             state.extLive = .nothingOpen
             lastState = nil
             return
@@ -368,39 +666,46 @@ final class PlayerBridge {
     // MARK: - Applying remote commands
 
     func applyRemote(_ msg: SyncMessage) {
-        guard let player else { return }
+        guard let player, player.isRunning else { return }
         suppressUntil = Date().addingTimeInterval(2)
         let latency = msg.latencySeconds
         let time = msg.time ?? 0
 
         switch msg.type {
         case "play":
-            osa(seekScript(for: player, to: time + latency)) { [weak self] _, _ in
+            osa(seekScript(for: player, to: time + latency), requiring: player) { [weak self] _, _ in
                 guard let self else { return }
-                self.osa(self.playScript(for: player)) { _, _ in }
+                self.osa(self.playScript(for: player), requiring: player) { _, _ in }
             }
         case "pause":
-            osa(pauseScript(for: player)) { [weak self] _, _ in
+            osa(pauseScript(for: player), requiring: player) { [weak self] _, _ in
                 guard let self else { return }
-                self.osa(self.seekScript(for: player, to: time)) { _, _ in }
+                self.osa(self.seekScript(for: player, to: time), requiring: player) { _, _ in }
             }
         case "seek":
             let playing = msg.playing ?? false
-            osa(seekScript(for: player, to: time + (playing ? latency : 0))) { [weak self] _, _ in
+            osa(
+                seekScript(for: player, to: time + (playing ? latency : 0)),
+                requiring: player
+            ) { [weak self] _, _ in
                 guard let self else { return }
                 let follow = playing ? self.playScript(for: player) : self.pauseScript(for: player)
-                self.osa(follow) { _, _ in }
+                self.osa(follow, requiring: player) { _, _ in }
             }
         case "tick":
-            osa(getScript(for: player)) { [weak self] out, _ in
+            osa(getScript(for: player), requiring: player) { [weak self] out, _ in
                 guard let self, let out, out != "none" else { return }
                 let parts = out.split(separator: "|")
                 guard parts.count >= 2,
                       let cur = Double(parts[0].replacingOccurrences(of: ",", with: ".")),
+                      cur.isFinite,
                       parts[1].trimmingCharacters(in: .whitespaces) == "true" else { return }
                 let target = time + latency
                 if abs(cur - target) > 2 {
-                    self.osa(self.seekScript(for: player, to: target)) { _, _ in }
+                    self.osa(
+                        self.seekScript(for: player, to: target),
+                        requiring: player
+                    ) { _, _ in }
                 }
             }
         default:

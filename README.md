@@ -6,7 +6,8 @@ The Electron original lives in `../Sofa` and is installed as **Sofa Legacy.app**
 
 ## Features (same as Legacy)
 
-- **Watch parties**: one person hosts (embedded WebSocket relay on port 7420), friends join via `sofa://` invite links (iMessage/AirDrop share sheet) or by address.
+- **Online watch parties**: both Macs connect out to an encrypted public WSS relay, so friends on different home networks can join through a `sofa://` invite link. Only tiny sync/presence messages cross the relay; video and call audio never do.
+- **Local mode remains available**: the embedded WebSocket relay on port 7420 still powers Test Zone, same-Wi-Fi parties and old invite links.
 - **Syncs your real players**: QuickTime, VLC, Chrome/Safari (YouTube, Netflix via its internal player API, Disney+…), Apple Music, Spotify — via AppleScript polling, plus a built-in AVPlayer with drag & drop and a bundled test video.
 - Play/pause/seek mirroring with latency compensation and periodic drift correction.
 - Audio card: built-in movie volume + system volume slider.
@@ -17,6 +18,15 @@ The Electron original lives in `../Sofa` and is installed as **Sofa Legacy.app**
 ```bash
 ./build.sh          # → dist/Sofa.app (universal: arm64 + x86_64)
 ```
+
+## Installing and sharing
+
+Send friends the single `Sofa-<version>.dmg` file. They open it, drag Sofa to
+Applications, then use right-click → Open the first time. The extra first-open
+step is required until Sofa is signed and notarized with an Apple Developer ID.
+
+The browser Theater helper is already embedded in Sofa; friends do not need the
+separate extension archive.
 
 ## Releasing a new version
 
@@ -30,15 +40,17 @@ gh auth login                      # sign in to GitHub
 gh repo create sofa --public --source=. --remote=origin --push
 ```
 
-Then, for every new version:
+Once the source and `Info.plist` already contain the new version, publish it with:
 
 ```bash
-./release.sh 2.1.0 "Apple TV support and faster sync"
+./release.sh 0.1.25 "Online watch parties across different networks"
 ```
 
-That bumps the version in `Info.plist`, builds a universal `.app`, zips it,
-commits, and publishes the GitHub release with the zip attached. Everyone's
-**Check for Updates…** picks it up immediately.
+The release script requires a clean `master` already pushed to GitHub. It builds
+and validates the universal app, tags that exact source commit, uploads the DMG
+and updater ZIP as a draft, downloads both again for a byte-for-byte check, and
+only then makes the release public. Everyone's **Check for Updates…** then
+offers the new version.
 
 The repo must be **public** — a private one would need an API token baked into
 the app for the update check to work.
@@ -50,11 +62,13 @@ Requires Xcode command line tools (Swift 6+). If Xcode 26+ is installed, the bui
 - `Sources/Sofa/main.swift` — entry point
 - `Sources/Sofa/App.swift` — status item, panel (NSVisualEffectView popover), sofa:// handling
 - `Sources/Sofa/AppState.swift` — central observable state + room lifecycle
-- `Sources/Sofa/SyncEngine.swift` — WebSocket relay (NWListener) + client (NWConnection), JSON protocol
+- `Sources/Sofa/SyncEngine.swift` — public WSS + local WebSocket clients, embedded LAN relay and JSON protocol
+- `Sources/Sofa/RoomTarget.swift` — strict parser for versioned online and legacy LAN invitations
 - `Sources/Sofa/PlayerBridge.swift` — AppleScript bridge to external players
 - `Sources/Sofa/BuiltinPlayer.swift` — AVPlayer with sync events
 - `Sources/Sofa/Views.swift` — SwiftUI UI (idle + room)
 - `Resources/` — demo video, icns, Icon Composer bundle
+- `Relay/` — Cloudflare Worker + Durable Object used by online rooms
 
 ## Gotchas learned the hard way
 

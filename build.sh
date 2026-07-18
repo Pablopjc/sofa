@@ -12,7 +12,7 @@ BIN=$(find .build -path "*Products/Release/Sofa" -type f 2>/dev/null | head -1)
 [ -f "$BIN" ] || { echo "binary not found"; find .build -name Sofa -type f -maxdepth 5; exit 1; }
 lipo -info "$BIN" | sed 's/^/▸ /'
 
-echo "▸ Assembling $APP…"
+echo "▸ Assembling ${APP}…"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Sofa"
@@ -21,6 +21,13 @@ cp Resources/icon.icns "$APP/Contents/Resources/icon.icns"
 cp Resources/demo.mp4 "$APP/Contents/Resources/demo.mp4"
 cp Resources/trayTemplate.png Resources/trayTemplate@2x.png "$APP/Contents/Resources/"
 cp Resources/traySofaTemplate.png Resources/traySofaTemplate@2x.png "$APP/Contents/Resources/"
+cp -R BrowserExtension "$APP/Contents/Resources/BrowserExtension"
+
+# Keep an unpacked copy beside the app for Chrome's Developer Mode -> Load
+# unpacked flow. Safari uses the identical helper through Sofa's built-in bridge.
+EXTENSION="dist/Sofa-Theater-Extension"
+rm -rf "$EXTENSION"
+cp -R BrowserExtension "$EXTENSION"
 
 # Adaptive light/dark icon (macOS 26+) — compiled from the Icon Composer bundle.
 ACTOOL=""

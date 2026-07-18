@@ -78,6 +78,25 @@ enum PlayerChoice: String, CaseIterable, Identifiable {
     static var externalPlayers: [PlayerChoice] {
         [.quicktime, .vlc, .appleTV, .chrome, .safari, .music, .spotify]
     }
+
+    /// Theater needs a window that actually contains moving video.
+    var supportsTheater: Bool {
+        switch self {
+        case .quicktime, .vlc, .appleTV, .chrome, .safari: return true
+        case .music, .spotify, .builtin: return false
+        }
+    }
+
+    var isBrowser: Bool { self == .chrome || self == .safari }
+
+    /// AppleScript's `tell application` launches a target that is not running.
+    /// Every background probe and remote command must check this first.
+    var isRunning: Bool {
+        guard let bundleID else { return self == .builtin }
+        return !NSRunningApplication.runningApplications(
+            withBundleIdentifier: bundleID
+        ).isEmpty
+    }
 }
 
 /// Live state of the external player shown in the UI.
@@ -87,6 +106,12 @@ enum ExtLiveState: Equatable {
     case blocked(browser: PlayerChoice)
     case notAuthorized
     case playing(time: Double, isPlaying: Bool)
+}
+
+enum RoomTransport: Equatable {
+    case online
+    case lan
+    case test
 }
 
 @MainActor
@@ -116,9 +141,16 @@ final class AppState: ObservableObject {
     @Published var peerCount = 0
     @Published var disconnected = false
     @Published var inviteLink = ""
+    @Published var inviteCode = ""
     @Published var joinAddress = ""
     @Published var joinError: String?
     @Published var joining = false
+    @Published var hosting = false
+    @Published var hostError: String?
+    @Published private(set) var roomTransport: RoomTransport?
+    private var roomOperationID: UUID?
+
+    var roomIsOnline: Bool { roomTransport == .online }
 
     // Player
     @Published var playerChoice: PlayerChoice = .quicktime
@@ -205,46 +237,95 @@ final class AppState: ObservableObject {
     // MARK: - Room lifecycle
 
     func hostRoom() {
-        do {
-            try sync.startHosting()
-            let ip = primaryIP()
-            inviteLink = "sofa://join/\(ip):\(SyncEngine.port)/\(sync.roomToken ?? "")"
-            isHosting = true
-            enterRoom(label: "Hosting")
-        } catch {
-            showToast("Could not start the party: \(error.localizedDescription)")
+        guard !hosting, !joining, !inRoom else { return }
+        let operationID = UUID()
+        roomOperationID = operationID
+        hosting = true
+        hostError = nil
+        joinError = nil
+
+        sync.startOnlineHosting { [weak self] result in
+            guard let self, self.roomOperationID == operationID else { return }
+            self.hosting = false
+            switch result {
+            case .success(let room):
+                self.inviteLink = "sofa://join/v1/\(room.roomID)/\(room.secret)"
+                self.inviteCode = room.roomID
+                self.isHosting = true
+                self.roomTransport = .online
+                self.enterRoom(label: "Hosting online")
+            case .failure(let error):
+                self.sync.stop()
+                self.hostError = "Could not start an online party. \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Explicit legacy mode for a trusted local network. Normal parties use the
+    /// public WSS relay; this remains useful offline and keeps old invites valid.
+    func hostLANRoom() {
+        guard !hosting, !joining, !inRoom else { return }
+        let operationID = UUID()
+        roomOperationID = operationID
+        hosting = true
+        hostError = nil
+        joinError = nil
+        sync.startHosting { [weak self] result in
+            guard let self, self.roomOperationID == operationID else { return }
+            self.hosting = false
+            switch result {
+            case .success:
+                let ip = primaryIP()
+                self.inviteLink = "sofa://join/\(ip):\(SyncEngine.port)/\(self.sync.roomToken ?? "")"
+                self.inviteCode = self.sync.roomToken ?? ""
+                self.isHosting = true
+                self.roomTransport = .lan
+                self.enterRoom(label: "Hosting locally")
+            case .failure(let error):
+                self.sync.stop()
+                self.roomOperationID = nil
+                self.hostError = "Could not start the local party. \(error.localizedDescription)"
+            }
         }
     }
 
     func join(target: String? = nil) {
+        guard !hosting, !joining, !inRoom else { return }
         let raw = target ?? joinAddress
-        let (addr, token) = Self.parseTarget(raw)
-        guard !addr.isEmpty else { return }
+        guard let target = Self.parseTarget(raw) else {
+            joinError = "That invite link is not valid. Ask your friend to copy the full link again."
+            return
+        }
+        let operationID = UUID()
+        roomOperationID = operationID
         joinError = nil
+        hostError = nil
         joining = true
-        sync.connect(to: addr, token: token) { [weak self] ok in
+
+        let completion: (Bool) -> Void = { [weak self] ok in
             guard let self else { return }
+            guard self.roomOperationID == operationID else { return }
             self.joining = false
             if ok {
-                self.enterRoom(label: "Connected")
-            } else if token == nil {
+                self.roomTransport = target.isOnline ? .online : .lan
+                self.enterRoom(label: target.isOnline ? "Connected online" : "Connected locally")
+            } else if target.token == nil {
                 self.joinError = "Could not join. Use the full invite link — it includes the room code."
             } else {
                 self.joinError = "Could not connect. Check the link and that your friend's party is still open."
             }
         }
+
+        switch target {
+        case .online(let roomID, let secret):
+            sync.connectOnline(roomID: roomID, secret: secret, completion: completion)
+        case .lan(let address, let token):
+            sync.connect(to: address, token: token, completion: completion)
+        }
     }
 
-    /// Accepts a full sofa:// link or a raw "host:port/CODE" — returns address + room code.
-    static func parseTarget(_ text: String) -> (address: String, token: String?) {
-        var t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let r = t.range(of: #"sofa://join/[^\s]+"#, options: .regularExpression) {
-            t = String(t[r]).replacingOccurrences(of: "sofa://join/", with: "")
-        }
-        let parts = t.split(separator: "/", maxSplits: 1)
-        let addr = String(parts.first ?? "")
-        let token = parts.count > 1 ? String(parts[1]).trimmingCharacters(in: CharacterSet(charactersIn: "/")) : nil
-        return (addr, (token?.isEmpty ?? true) ? nil : token)
+    static func parseTarget(_ text: String) -> RoomTarget? {
+        RoomTarget.parse(text)
     }
 
     private func enterRoom(label: String) {
@@ -259,34 +340,77 @@ final class AppState: ObservableObject {
         applyPlayerChoice()
     }
 
+    /// Called by SyncEngine only for an online session that had already passed
+    /// authentication. Initial join failures stay in the idle UI instead.
+    func markOnlineReconnecting() {
+        guard inRoom, roomTransport == .online else { return }
+        if !disconnected {
+            showToast("Connection lost — reconnecting…")
+        }
+        disconnected = true
+        statusLabel = "Reconnecting…"
+    }
+
+    func markOnlineConnectionRestored() {
+        guard inRoom, roomTransport == .online else { return }
+        disconnected = false
+        statusLabel = isHosting ? "Hosting online" : "Connected online"
+        showToast("Connection restored")
+    }
+
+    /// A LAN listener cannot recover its fixed port while the room is active.
+    /// Remove the dead invite immediately instead of leaving a copyable link
+    /// that no friend can use.
+    func localPartyStoppedUnexpectedly() {
+        guard inRoom, (roomTransport == .lan || roomTransport == .test) else { return }
+        let wasTestMode = isTestMode
+        let message = wasTestMode
+            ? "Test Zone stopped. Open it again to retry."
+            : "The local party stopped. Start it again to create a new invite."
+        leaveRoom()
+        if !wasTestMode { hostError = message }
+        showToast(message)
+    }
+
     /// Test Zone hosts a real room and joins a simulated friend to it, so the
     /// network, the player control and the menu bar icon all get exercised
     /// without needing a second person.
     func enterTestZone() {
-        do {
-            try sync.startHosting()
-        } catch {
-            showToast("Couldn't start test mode: \(error.localizedDescription)")
-            return
+        guard !hosting, !joining, !inRoom else { return }
+        let operationID = UUID()
+        roomOperationID = operationID
+        hosting = true
+        hostError = nil
+        joinError = nil
+        sync.startHosting { [weak self] result in
+            guard let self, self.roomOperationID == operationID else { return }
+            self.hosting = false
+            switch result {
+            case .failure(let error):
+                self.sync.stop()
+                self.roomOperationID = nil
+                self.showToast("Couldn't start test mode: \(error.localizedDescription)")
+            case .success:
+                self.isTestMode = true
+                self.roomTransport = .test
+                self.inRoom = true
+                self.disconnected = false
+                self.statusLabel = "Test mode"
+                self.startDetecting()
+                // Prefer a player you already have open; otherwise use Sofa's own.
+                self.playerChoice = self.detectedSources.first ?? .builtin
+                self.applyPlayerChoice()
+                if self.playerChoice == .builtin { self.builtin.loadDemo() }
+                // The fake friend starts only after NWListener reached .ready
+                // and Sofa's own client authenticated successfully.
+                self.testFriend.join(token: self.sync.roomToken)
+            }
         }
-        isTestMode = true
-        inRoom = true
-        disconnected = false
-        statusLabel = "Test mode"
-        startDetecting()
-        // Prefer a player you already have open; otherwise use Sofa's own.
-        playerChoice = detectedSources.first ?? .builtin
-        applyPlayerChoice()
-        if playerChoice == .builtin { builtin.loadDemo() }
-        testFriend.join(token: sync.roomToken)
     }
 
     func leaveRoom() {
-        if theaterActive {
-            PlayerBridge.shared.setCinema(false, for: playerChoice)
-            WindowArranger.exitTheater()
-            theaterActive = false
-        }
+        roomOperationID = nil
+        if theaterActive || theaterTransitioning { stopTheater() }
         FakeCall.shared.hide()
         testFriend.leave()
         sync.stop()
@@ -296,7 +420,13 @@ final class AppState: ObservableObject {
         inRoom = false
         isHosting = false
         isTestMode = false
+        hosting = false
+        joining = false
+        hostError = nil
+        joinError = nil
+        roomTransport = nil
         inviteLink = ""
+        inviteCode = ""
         joinAddress = ""
         peerCount = 0
         mediaActive = false
@@ -324,6 +454,9 @@ final class AppState: ObservableObject {
     func stopDetecting() {
         detectTimer?.invalidate()
         detectTimer = nil
+        theaterAvailabilityProbeID = nil
+        theaterAvailabilityChecking = false
+        browserPageFullscreenReady = false
     }
 
     func refreshSources() {
@@ -333,6 +466,33 @@ final class AppState: ObservableObject {
         if notice != unsupportedNotice { unsupportedNotice = notice }
         let call = WindowArranger.runningCallApp()
         if call?.bundleID != detectedCallApp?.bundleID { detectedCallApp = call }
+        refreshTheaterAvailability()
+    }
+
+    /// Checks the selected browser tab without changing its fullscreen state.
+    /// Safe to call whenever the Sofa panel opens or the source timer ticks.
+    func refreshTheaterAvailability() {
+        let selectedPlayer = playerChoice
+        guard selectedPlayer.isBrowser, !theaterTransitioning else {
+            theaterAvailabilityProbeID = nil
+            theaterAvailabilityChecking = false
+            if !theaterActive { browserPageFullscreenReady = false }
+            return
+        }
+
+        let probeID = UUID()
+        theaterAvailabilityProbeID = probeID
+        theaterAvailabilityChecking = true
+        PlayerBridge.shared.compatibleBrowserPageFullscreen(for: selectedPlayer) { [weak self] ready in
+            guard let self, self.theaterAvailabilityProbeID == probeID,
+                  self.playerChoice == selectedPlayer else { return }
+            self.theaterAvailabilityChecking = false
+            self.browserPageFullscreenReady = ready
+            if self.theaterActive, !ready {
+                self.stopTheater()
+                self.showToast("The video left full screen, so Theater was closed.")
+            }
+        }
     }
 
     // MARK: - Window layout
@@ -340,19 +500,33 @@ final class AppState: ObservableObject {
     /// Whether the black-curtain theater layout is currently up.
     @Published var theaterActive = false
 
-    /// Toggles Theater mode: black backdrop over everything, the movie filling
-    /// the screen — with a call column on the right when there's a call (real
-    /// or simulated), wall to wall when there isn't. Prompts for the
-    /// Accessibility permission the first time.
+    /// True while Sofa is leaving fullscreen, waiting for the Space transition,
+    /// and verifying the final window layout.
+    @Published var theaterTransitioning = false
+    /// Theater is intentionally gated by the fullscreen the viewer opened with
+    /// F. This is refreshed while the party panel is active and rechecked on
+    /// every entrance so a stale value can never trigger a different layout.
+    @Published private(set) var browserPageFullscreenReady = false
+    @Published private(set) var theaterAvailabilityChecking = false
+    private var theaterRequestID: UUID?
+    private var theaterPlayer: PlayerChoice?
+    private var theaterAvailabilityProbeID: UUID?
+
+    var canEnterTheater: Bool {
+        theaterActive || (playerChoice.isBrowser && browserPageFullscreenReady)
+    }
+
+    /// Adds Sofa's call surface to the HTML fullscreen the viewer already opened
+    /// with F. Browser Theater never exits that fullscreen and never creates a
+    /// replacement Space of its own.
     func toggleTheater() {
-        if theaterActive {
-            PlayerBridge.shared.setCinema(false, for: playerChoice)
-            WindowArranger.exitTheater()
-            theaterActive = false
+        if theaterActive || theaterTransitioning {
+            stopTheater()
             return
         }
-        guard playerChoice != .builtin else {
-            showToast("Theater works with an external player, not Sofa’s own.")
+        let selectedPlayer = playerChoice
+        guard selectedPlayer.isBrowser else {
+            showToast("Theater is available for fullscreen browser video.")
             return
         }
         guard WindowArranger.hasAccessibilityPermission else {
@@ -360,50 +534,164 @@ final class AppState: ObservableObject {
             showToast("Allow Sofa in Accessibility, then press the button again.")
             return
         }
+        let requestID = UUID()
+        theaterRequestID = requestID
+        theaterPlayer = selectedPlayer
+        theaterTransitioning = true
+        theaterAvailabilityProbeID = nil
+        theaterAvailabilityChecking = true
 
-        let call: WindowArranger.CallTarget
-        if let real = detectedCallApp {
-            call = .app(real)
-        } else if FakeCall.shared.visible {
-            call = .fake
-        } else {
-            call = .none
+        let markReady: () -> Void = { [weak self] in
+            guard let self, self.theaterRequestID == requestID else { return }
+            self.theaterTransitioning = false
+            self.theaterActive = true
+            self.browserPageFullscreenReady = true
+            NotificationCenter.default.post(name: .sofaHidePanel, object: nil)
         }
 
-        // If the player is in native fullscreen (its own macOS Space), Theater's
-        // windowed layout can't coexist with it — the video would stay on its
-        // Space while the black backdrop shows an empty desktop. Leave fullscreen
-        // first (both the page's HTML5 kind and the window kind), wait for the
-        // Space to switch back, then lay everything out.
-        PlayerBridge.shared.exitBrowserFullscreen(for: playerChoice)
-        let wasWindowFullscreen = WindowArranger.leaveNativeFullscreen(player: playerChoice)
-        let settle = wasWindowFullscreen ? 1.0 : 0.35
+        let failBeforeArrangement: (String) -> Void = { [weak self] message in
+            guard let self, self.theaterRequestID == requestID else { return }
+            self.theaterRequestID = nil
+            self.theaterPlayer = nil
+            self.theaterTransitioning = false
+            self.theaterAvailabilityChecking = false
+            self.showToast(message)
+        }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + settle) { [weak self, playerChoice] in
-            guard let self else { return }
-            do {
-                try WindowArranger.enterTheater(player: playerChoice, call: call)
-                self.theaterActive = true
-                // For browsers: fill the window with the video, hiding page chrome.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    PlayerBridge.shared.setCinema(true, for: playerChoice)
+        // Recheck at the click boundary. The periodically published value is UI
+        // guidance only; it is never trusted to mutate a browser window.
+        PlayerBridge.shared.compatibleBrowserPageFullscreen(for: selectedPlayer) { [weak self] pageFullscreen in
+            guard let self, self.theaterRequestID == requestID else { return }
+            self.theaterAvailabilityChecking = false
+            self.browserPageFullscreenReady = pageFullscreen
+            guard pageFullscreen else {
+                failBeforeArrangement("Put the video in full screen first (press F), then enter Theater.")
+                return
+            }
+
+            let call: WindowArranger.CallTarget
+            let reserveCallColumn: Bool
+            if FakeCall.shared.visible {
+                call = .fake
+                reserveCallColumn = true
+            } else if !self.isTestMode, let real = self.detectedCallApp {
+                failBeforeArrangement("The \(real.name) window cannot join the video’s full-screen Space yet.")
+                return
+            } else {
+                // Test mode ignores unrelated call apps that merely happen to be
+                // open. Use “Show fake call window” to populate the right side.
+                call = .none
+                reserveCallColumn = false
+            }
+
+            WindowArranger.enterTheater(
+                player: selectedPlayer,
+                call: call,
+                useBrowserFullscreenStage: true,
+                browserPageFullscreen: true
+            ) { [weak self] result in
+                guard let self, self.theaterRequestID == requestID else { return }
+                switch result {
+                case .failure(let error):
+                    self.stopTheater()
+                    self.showToast(error.localizedDescription)
+                case .success:
+                    // The site remains in its own fullscreen. Reserve the right
+                    // side without reparenting YouTube or touching Netflix's DRM
+                    // video/canvas/transform.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                        guard let self, self.theaterRequestID == requestID else { return }
+                        PlayerBridge.shared.setCinema(
+                            true,
+                            for: selectedPlayer,
+                            reserveCallColumn: reserveCallColumn
+                        ) { [weak self] cinemaReady in
+                            guard let self, self.theaterRequestID == requestID else { return }
+                            if !cinemaReady {
+                                self.stopTheater()
+                                self.showToast("Sofa couldn't prepare this YouTube or Netflix player. Keep the video tab visible and try again.")
+                                return
+                            }
+                            // Confirm F is still active after the CSS landed. A
+                            // successful Cinema result is also required to end in
+                            // |pagefs, but this independent probe closes the race.
+                            PlayerBridge.shared.compatibleBrowserPageFullscreen(for: selectedPlayer) { [weak self] stillFullscreen in
+                                guard let self, self.theaterRequestID == requestID else { return }
+                                guard stillFullscreen else {
+                                    self.stopTheater()
+                                    self.showToast("The video left full screen before Theater was ready.")
+                                    return
+                                }
+                                markReady()
+                            }
+                        }
+                    }
                 }
-                // The panel itself is a distraction on black — tuck it away.
-                NotificationCenter.default.post(name: .sofaHidePanel, object: nil)
-            } catch {
-                self.showToast(error.localizedDescription)
             }
         }
+    }
+
+    /// Idempotent cleanup for Exit, changing player, leaving the party and quit.
+    func stopTheater() {
+        theaterRequestID = nil
+        theaterTransitioning = false
+        theaterAvailabilityProbeID = nil
+        theaterAvailabilityChecking = false
+        if let player = theaterPlayer {
+            PlayerBridge.shared.setCinema(false, for: player) { [weak self] removed in
+                guard !removed else { return }
+                // Retry the exact captured tab once without changing its
+                // fullscreen state. Cleanup is idempotent.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    PlayerBridge.shared.setCinema(false, for: player) { retryRemoved in
+                        if !retryRemoved {
+                            self?.showToast("Sofa couldn't fully restore the browser tab. Reload that tab to clear Theater.")
+                        }
+                    }
+                }
+            }
+        }
+        WindowArranger.exitTheater()
+        theaterActive = false
+        theaterPlayer = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.refreshTheaterAvailability()
+        }
+    }
+
+    /// Synchronous browser cleanup for `applicationWillTerminate`. Normal
+    /// Theater exit remains asynchronous so the menu-bar UI never blocks.
+    @discardableResult
+    func prepareTheaterForTermination() -> Bool {
+        let hadTheater = theaterActive || theaterTransitioning || theaterPlayer != nil
+            || WindowArranger.restorationPending
+        theaterRequestID = nil
+        theaterTransitioning = false
+        // Always serialize browser cleanup: the user may have pressed Exit a
+        // fraction of a second before Quit, clearing `theaterPlayer` while the
+        // precise tab cleanup was still waiting on PlayerBridge's queue.
+        PlayerBridge.shared.clearCinemaBeforeTermination(for: theaterPlayer)
+        WindowArranger.exitTheater()
+        theaterActive = false
+        theaterPlayer = nil
+        return hadTheater
     }
 
     // MARK: - Player choice
 
     func selectPlayer(_ choice: PlayerChoice) {
+        if theaterActive || theaterTransitioning { stopTheater() }
+        theaterAvailabilityProbeID = nil
+        theaterAvailabilityChecking = false
+        browserPageFullscreenReady = false
         playerChoice = choice
         applyPlayerChoice()
     }
 
     func applyPlayerChoice() {
+        theaterAvailabilityProbeID = nil
+        theaterAvailabilityChecking = false
+        browserPageFullscreenReady = false
         if playerChoice == .builtin {
             PlayerBridge.shared.stop()
         } else {
@@ -414,6 +702,7 @@ final class AppState: ObservableObject {
             mediaActive = true
             PlayerBridge.shared.start(player: playerChoice)
         }
+        refreshTheaterAvailability()
     }
 }
 

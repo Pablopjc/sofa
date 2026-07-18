@@ -8,6 +8,10 @@ import SwiftUI
 final class FakeCall: ObservableObject {
     static let shared = FakeCall()
 
+    private static let normalWidth: CGFloat = 320
+    private static let theaterWidth: CGFloat = 240
+    private static let callHeight: CGFloat = 420
+
     @Published var visible = false
     private var window: NSPanel?
 
@@ -18,20 +22,30 @@ final class FakeCall: ObservableObject {
     func show() {
         if window == nil {
             let panel = NSPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 320, height: 420),
+                contentRect: NSRect(
+                    x: 0,
+                    y: 0,
+                    width: Self.normalWidth,
+                    height: Self.callHeight
+                ),
                 styleMask: [.nonactivatingPanel, .borderless],
                 backing: .buffered, defer: false
             )
             panel.isFloatingPanel = true
-            // Screen-saver level keeps the call above everything — other apps,
-            // and even a video that goes full-screen (which opens its own Space).
-            panel.level = .screenSaver
+            panel.level = .floating
+            panel.hidesOnDeactivate = false
+            panel.becomesKeyOnlyIfNeeded = true
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = true
             panel.isMovableByWindowBackground = true
-            // Ride along to every Space, including a full-screen video's own one.
-            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            panel.collectionBehavior = [
+                .canJoinAllApplications,
+                .canJoinAllSpaces,
+                .fullScreenAuxiliary,
+                .stationary,
+                .ignoresCycle,
+            ]
             panel.isReleasedWhenClosed = false
             panel.contentView = NSHostingView(rootView: FakeCallView())
             window = panel
@@ -39,21 +53,61 @@ final class FakeCall: ObservableObject {
         // First appearance: park it roughly where Theater would put it.
         if let screen = NSScreen.main, let window {
             let v = screen.visibleFrame
-            window.setFrameOrigin(NSPoint(x: v.maxX - 320 - 8, y: v.midY - 210))
+            window.setFrameOrigin(NSPoint(
+                x: v.maxX - Self.normalWidth - 8,
+                y: v.midY - Self.callHeight / 2
+            ))
         }
-        window?.orderFront(nil)
+        window?.orderFrontRegardless()
         visible = true
     }
 
     func hide() {
         window?.orderOut(nil)
+        window?.level = .floating
         visible = false
     }
+
+    /// The browser already owns the fullscreen Space because the viewer pressed
+    /// F. Use a narrower call panel in Theater so the movie can be expanded
+    /// farther right while the call remains fully outside the video.
+    func enterPageFullscreenOverlay(on screen: NSScreen) {
+        show()
+        guard let window else { return }
+        let visibleFrame = screen.visibleFrame
+        let frame = NSRect(
+            x: visibleFrame.maxX - Self.theaterWidth - 8,
+            y: visibleFrame.midY - Self.callHeight / 2,
+            width: Self.theaterWidth,
+            height: Self.callHeight
+        )
+        window.level = .floating
+        window.setFrame(frame, display: true)
+        window.orderFrontRegardless()
+    }
+
+    /// Native browser full screen lives in its own Space. Temporarily raise the
+    /// Sofa-owned call surface above that Space, then return it to an ordinary
+    /// floating panel when Theater exits.
+    func enterFullscreenStage() {
+        guard let window else { return }
+        window.level = .screenSaver
+        window.orderFrontRegardless()
+    }
+
+    func leaveFullscreenStage() {
+        guard let window else { return }
+        window.level = .floating
+        if visible { window.orderFrontRegardless() }
+    }
+
+    /// Saved by Theater so leaving the mode restores the rehearsal window too.
+    var frame: NSRect? { window?.frame }
 
     /// Theater layout drops the call column here (native bottom-left coords).
     func position(frame: NSRect) {
         window?.setFrame(frame, display: true)
-        window?.orderFront(nil)
+        window?.orderFrontRegardless()
     }
 }
 
