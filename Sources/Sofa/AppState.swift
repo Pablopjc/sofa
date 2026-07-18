@@ -68,11 +68,16 @@ enum PlayerChoice: String, CaseIterable, Identifiable {
     }
 
     /// The real app icon (for the source list), or nil for the built-in player.
+    private static let appIconCache = NSCache<NSString, NSImage>()
+
     @MainActor var appIcon: NSImage? {
         guard let bundleID,
               let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
         else { return nil }
-        return NSWorkspace.shared.icon(forFile: url.path)
+        if let cached = Self.appIconCache.object(forKey: bundleID as NSString) { return cached }
+        let image = NSWorkspace.shared.icon(forFile: url.path)
+        Self.appIconCache.setObject(image, forKey: bundleID as NSString)
+        return image
     }
 
     /// Players Sofa can drive (excludes the built-in player).
@@ -177,6 +182,7 @@ final class AppState: ObservableObject {
     /// The video-call app currently running, if any (for the Arrange layout).
     @Published var detectedCallApp: WindowArranger.CallApp?
     private var detectTimer: Timer?
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     // Audio
     @Published var systemVolume: Double = 50
@@ -463,14 +469,32 @@ final class AppState: ObservableObject {
     func startDetecting() {
         refreshSources()
         detectTimer?.invalidate()
-        detectTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshSources() }
+        }
+        timer.tolerance = 1.0
+        detectTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+
+        if workspaceObservers.isEmpty {
+            let center = NSWorkspace.shared.notificationCenter
+            for name in [NSWorkspace.didLaunchApplicationNotification,
+                         NSWorkspace.didTerminateApplicationNotification] {
+                workspaceObservers.append(center.addObserver(
+                    forName: name, object: nil, queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor in self?.refreshSources() }
+                })
+            }
         }
     }
 
     func stopDetecting() {
         detectTimer?.invalidate()
         detectTimer = nil
+        let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers.forEach(center.removeObserver)
+        workspaceObservers.removeAll()
         stopCallAudio()
         theaterAvailabilityProbeID = nil
         theaterAvailabilityChecking = false
@@ -478,11 +502,15 @@ final class AppState: ObservableObject {
     }
 
     func refreshSources() {
-        let running = MediaSourceDetector.runningPlayers()
-        if running != detectedSources { detectedSources = running }
-        let notice = MediaSourceDetector.runningUnsupported().first?.advice
+        let runningIDs = MediaSourceDetector.runningBundleIDs()
+        let running = MediaSourceDetector.runningPlayers(in: runningIDs)
+        if running != detectedSources {
+            detectedSources = running
+            PlayerBridge.shared.wakePolling()
+        }
+        let notice = MediaSourceDetector.runningUnsupported(in: runningIDs).first?.advice
         if notice != unsupportedNotice { unsupportedNotice = notice }
-        let call = WindowArranger.runningCallApp()
+        let call = WindowArranger.runningCallApp(in: runningIDs)
         if call?.bundleID != detectedCallApp?.bundleID {
             detectedCallApp = call
             if call?.bundleID == "com.apple.FaceTime", callVolume < 99.5 {
@@ -491,7 +519,19 @@ final class AppState: ObservableObject {
                 stopCallAudioProcessor()
             }
         }
-        refreshTheaterAvailability()
+    }
+
+    /// The normal player poll already runs while a room is active. Reusing its
+    /// fullscreen bit avoids launching a second osascript process every few
+    /// seconds solely for Theater availability.
+    func playerBridgeReportedFullscreen(_ ready: Bool?, for player: PlayerChoice) {
+        guard let ready, player == playerChoice, player.isBrowser,
+              !theaterTransitioning else { return }
+        if browserPageFullscreenReady != ready { browserPageFullscreenReady = ready }
+        if theaterActive, !ready {
+            stopTheater()
+            showToast("The video left full screen, so Theater was closed.")
+        }
     }
 
     func setCallVolume(_ value: Double) {

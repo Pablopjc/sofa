@@ -1,4 +1,5 @@
 import AudioToolbox
+import Accelerate
 import Foundation
 
 /// Applies gain to FaceTime's received call audio without changing the movie or the
@@ -16,6 +17,10 @@ final class CallAudioVolume: @unchecked Sendable {
     private var ioProcID: AudioDeviceIOProcID?
     private var renderCallbacks = 0
     private var verificationID = UUID()
+    private struct ChannelRef { let buffer: Int; let channel: Int }
+    private var sourceLayout: [ChannelRef] = []
+    private var sourceLayoutBufferCount = -1
+    private var sourceLayoutChannelCount = -1
 
     private init() {}
 
@@ -64,6 +69,10 @@ final class CallAudioVolume: @unchecked Sendable {
     private func startLocked() throws {
         renderCallbacks = 0
         verificationID = UUID()
+        sourceLayout.removeAll(keepingCapacity: true)
+        sourceLayout.reserveCapacity(32)
+        sourceLayoutBufferCount = -1
+        sourceLayoutChannelCount = -1
         let processIDs = try faceTimeAudioProcesses()
         if #unavailable(macOS 26.0), processIDs.isEmpty {
             throw CallAudioError.noFaceTimeAudio
@@ -179,27 +188,22 @@ final class CallAudioVolume: @unchecked Sendable {
         // previous code returned early whenever the *buffer counts* matched,
         // even when their channel layouts did not; that left most output
         // channels silent and caused the huge 100% → 98% volume cliff.
-        struct Channel {
-            let samples: UnsafePointer<Float>
-            let stride: Int
-            let offset: Int
-            let frames: Int
-        }
-        var sourceChannels: [Channel] = []
-        for buffer in inputs {
-            let channels = Int(buffer.mNumberChannels)
-            guard channels > 0,
-                  let samples = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
-            let frames = Int(buffer.mDataByteSize) / (MemoryLayout<Float>.size * channels)
-            for channel in 0..<channels {
-                sourceChannels.append(Channel(
-                    samples: UnsafePointer(samples), stride: channels,
-                    offset: channel, frames: frames
-                ))
+        var inputChannelCount = 0
+        for buffer in inputs { inputChannelCount += Int(buffer.mNumberChannels) }
+        if sourceLayoutBufferCount != inputs.count ||
+            sourceLayoutChannelCount != inputChannelCount {
+            sourceLayout.removeAll(keepingCapacity: true)
+            sourceLayoutBufferCount = inputs.count
+            sourceLayoutChannelCount = inputChannelCount
+            for (bufferIndex, buffer) in inputs.enumerated() where buffer.mData != nil {
+                for channel in 0..<Int(buffer.mNumberChannels) {
+                    sourceLayout.append(ChannelRef(buffer: bufferIndex, channel: channel))
+                }
             }
         }
-        guard !sourceChannels.isEmpty else { return }
+        guard !sourceLayout.isEmpty else { return }
 
+        var currentGain = gain
         var outputChannel = 0
         for index in outputs.indices {
             let channels = Int(outputs[index].mNumberChannels)
@@ -211,12 +215,22 @@ final class CallAudioVolume: @unchecked Sendable {
             for channel in 0..<channels {
                 // Mono is duplicated; surplus source channels are folded onto
                 // the last available channel rather than disappearing.
-                let source = sourceChannels[min(outputChannel, sourceChannels.count - 1)]
-                let frames = min(outputFrames, source.frames)
-                for frame in 0..<frames {
-                    destination[frame * channels + channel] =
-                        source.samples[frame * source.stride + source.offset] * gain
-                }
+                let sourceRef = sourceLayout[min(outputChannel, sourceLayout.count - 1)]
+                let sourceBuffer = inputs[sourceRef.buffer]
+                let sourceStride = Int(sourceBuffer.mNumberChannels)
+                guard sourceStride > 0,
+                      let source = sourceBuffer.mData?.assumingMemoryBound(to: Float.self)
+                else { continue }
+                let sourceFrames = Int(sourceBuffer.mDataByteSize) /
+                    (MemoryLayout<Float>.size * sourceStride)
+                let frames = min(outputFrames, sourceFrames)
+                guard frames > 0 else { continue }
+                vDSP_vsmul(
+                    source.advanced(by: sourceRef.channel), vDSP_Stride(sourceStride),
+                    &currentGain,
+                    destination.advanced(by: channel), vDSP_Stride(channels),
+                    vDSP_Length(frames)
+                )
                 outputChannel += 1
             }
         }
@@ -224,6 +238,9 @@ final class CallAudioVolume: @unchecked Sendable {
 
     private func stopLocked() {
         verificationID = UUID()
+        sourceLayout.removeAll(keepingCapacity: true)
+        sourceLayoutBufferCount = -1
+        sourceLayoutChannelCount = -1
         if aggregateDeviceID != kAudioObjectUnknown {
             _ = AudioDeviceStop(aggregateDeviceID, ioProcID)
             if let ioProcID {

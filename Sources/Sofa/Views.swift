@@ -1,5 +1,6 @@
 import AVKit
 import AppKit
+import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -577,9 +578,19 @@ struct PlayerCard: View {
                             Text(friendTitle)
                                 .font(.system(size: 12.5, weight: .medium))
                                 .lineLimit(1).truncationMode(.tail)
-                            Text(friendPlaybackText)
-                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
-                                .lineLimit(1)
+                            if state.friendIsPlaying == true {
+                                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                                    Text(friendPlaybackText)
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            } else {
+                                Text(friendPlaybackText)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
                         }
                         Spacer(minLength: 0)
                         Image(systemName: "arrow.right.circle.fill")
@@ -697,7 +708,7 @@ final class ArtworkView: NSView {
 /// Downloads and caches a remote image (poster / cover art), showing a fallback
 /// image while it loads or if there's none. Built on AppKit (no SwiftUI @State,
 /// whose macro plugin isn't in the command-line toolchain). Cached by URL so
-/// the 0.7s poll doesn't re-download the same artwork.
+/// the player poll doesn't re-download the same artwork.
 struct RemoteImage: NSViewRepresentable {
     let urlString: String?
     let fallback: NSImage?
@@ -716,9 +727,12 @@ struct RemoteImage: NSViewRepresentable {
 
     final class Coordinator {
         private var currentURL: String?
+        private var task: URLSessionDataTask?
 
         func load(_ urlString: String?, fallback: NSImage?, into view: ArtworkView) {
             guard urlString != currentURL else { return }
+            task?.cancel()
+            task = nil
             currentURL = urlString
             view.picture = fallback
 
@@ -727,15 +741,40 @@ struct RemoteImage: NSViewRepresentable {
                 view.picture = cached
                 return
             }
-            URLSession.shared.dataTask(with: url) { [weak view] data, _, _ in
-                guard let data, let img = NSImage(data: data) else { return }
-                RemoteImageCache.shared.setObject(img, forKey: urlString as NSString)
+            var request = URLRequest(url: url)
+            request.cachePolicy = .returnCacheDataElseLoad
+            request.timeoutInterval = 12
+            task = URLSession.shared.dataTask(with: request) { [weak self, weak view] data, response, _ in
+                guard let http = response as? HTTPURLResponse,
+                      (200..<300).contains(http.statusCode),
+                      http.mimeType?.lowercased().hasPrefix("image/") == true,
+                      http.expectedContentLength <= 8_000_000 || http.expectedContentLength < 0,
+                      let data, data.count <= 8_000_000,
+                      let img = Self.thumbnail(from: data) else { return }
+                RemoteImageCache.shared.setObject(
+                    img, forKey: urlString as NSString, cost: 128 * 128 * 4
+                )
                 DispatchQueue.main.async {
                     // Ignore if the row moved on to different content meanwhile.
-                    guard self.currentURL == urlString else { return }
+                    guard self?.currentURL == urlString else { return }
                     view?.picture = img
                 }
-            }.resume()
+            }
+            task?.resume()
+        }
+
+        /// Posters can be several thousand pixels wide. Sofa displays them at
+        /// 28×28 points, so decoding and caching the original wastes tens of MB
+        /// on both architectures (and is especially costly on older Intel GPUs).
+        private static func thumbnail(from data: Data) -> NSImage? {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 128,
+                    kCGImageSourceShouldCacheImmediately: true,
+                  ] as CFDictionary) else { return nil }
+            return NSImage(cgImage: image, size: NSSize(width: 64, height: 64))
         }
     }
 }
@@ -744,6 +783,7 @@ enum RemoteImageCache {
     static let shared: NSCache<NSString, NSImage> = {
         let c = NSCache<NSString, NSImage>()
         c.countLimit = 40
+        c.totalCostLimit = 8 * 1_024 * 1_024
         return c
     }()
 }

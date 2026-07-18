@@ -3,6 +3,7 @@ import Foundation
 /// System output volume via osascript (same approach as the legacy app).
 enum SystemVolume {
     private static let queue = DispatchQueue(label: "sofa.sysvolume")
+    @MainActor private static var pendingSet: DispatchWorkItem?
 
     static func get(_ completion: @escaping (Int) -> Void) {
         run(["-e", "output volume of (get volume settings)"]) { out in
@@ -10,9 +11,14 @@ enum SystemVolume {
         }
     }
 
-    static func set(_ value: Int) {
+    @MainActor static func set(_ value: Int) {
         let v = max(0, min(100, value))
-        run(["-e", "set volume output volume \(v)"]) { _ in }
+        pendingSet?.cancel()
+        let work = DispatchWorkItem {
+            run(["-e", "set volume output volume \(v)"]) { _ in }
+        }
+        pendingSet = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
     }
 
     private static func run(_ args: [String], completion: @escaping (String?) -> Void) {

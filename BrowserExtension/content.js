@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.29-friends";
-  const EVENT_NAME = "sofa-theater-command-0.1.29-friends";
+  const VERSION = "0.1.30-efficiency";
+  const EVENT_NAME = "sofa-theater-command-0.1.30-efficiency";
   const READY_ATTR = "data-sofa-theater-helper";
   const COMMAND_ATTR = "data-sofa-theater-command";
   const STATUS_ATTR = "data-sofa-theater-status";
@@ -22,6 +22,7 @@
   // The WebExtension and Sofa's built-in fallback share this DOM marker. The
   // first one installed owns the command listener; a second copy is unnecessary.
   if (html.getAttribute(READY_ATTR) === VERSION) return;
+  try { globalThis.__sofaTheaterHelper?.destroy?.(); } catch (_) {}
 
   let activeTarget = null;
   let activeKind = null;
@@ -29,6 +30,9 @@
   let autoReserve = false;
   let preferredReservedWidth = null;
   let refreshQueued = false;
+  let refreshFrame = 0;
+  let refreshObserver = null;
+  let activeListenersInstalled = false;
   let sizingRule = null;
   let resizePointerID = null;
   let pendingReservedWidth = null;
@@ -414,8 +418,52 @@
     if (activeKind && !compatibleFullscreen(activeTarget)) clearLayout(true);
   }
 
+  function attachActiveListeners() {
+    if (activeListenersInstalled) return;
+    activeListenersInstalled = true;
+    window.addEventListener("pointermove", handlePointerMove, true);
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("pointerup", handlePointerUp, true);
+    window.addEventListener("pointercancel", handlePointerCancel, true);
+    window.addEventListener("pointerleave", handlePointerLeave, true);
+    window.addEventListener("mouseup", handleMouseUpFallback, true);
+    window.addEventListener("blur", handleWindowBlur, true);
+    window.addEventListener("resize", handleViewportResize, true);
+    html.addEventListener("lostpointercapture", handlePointerCancel, true);
+    document.addEventListener("fullscreenchange", handleFullscreenChange, true);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange, true);
+    refreshObserver = new MutationObserver(() => {
+      if (!activeKind || refreshQueued) return;
+      refreshQueued = true;
+      refreshFrame = requestAnimationFrame(refreshTargetAfterPageUpdate);
+    });
+    refreshObserver.observe(html, { childList: true, subtree: true });
+  }
+
+  function detachActiveListeners() {
+    if (!activeListenersInstalled) return;
+    activeListenersInstalled = false;
+    window.removeEventListener("pointermove", handlePointerMove, true);
+    window.removeEventListener("pointerdown", handlePointerDown, true);
+    window.removeEventListener("pointerup", handlePointerUp, true);
+    window.removeEventListener("pointercancel", handlePointerCancel, true);
+    window.removeEventListener("pointerleave", handlePointerLeave, true);
+    window.removeEventListener("mouseup", handleMouseUpFallback, true);
+    window.removeEventListener("blur", handleWindowBlur, true);
+    window.removeEventListener("resize", handleViewportResize, true);
+    html.removeEventListener("lostpointercapture", handlePointerCancel, true);
+    document.removeEventListener("fullscreenchange", handleFullscreenChange, true);
+    document.removeEventListener("webkitfullscreenchange", handleFullscreenChange, true);
+    refreshObserver?.disconnect();
+    refreshObserver = null;
+    if (refreshFrame) cancelAnimationFrame(refreshFrame);
+    refreshFrame = 0;
+    refreshQueued = false;
+  }
+
   function clearLayout(updateStatus = true, notifyResize = true) {
     const layoutNeedsResize = activeKind === "youtube";
+    detachActiveListeners();
     cancelResizeInteraction();
     cleanLegacyLayout();
     document.getElementById(STYLE_ID)?.remove();
@@ -510,6 +558,10 @@
       return;
     }
 
+    // YouTube and Netflix mutate their DOM continuously. Pointer listeners and
+    // the subtree observer are useful only during Theater; keeping them detached
+    // the rest of the time makes the extension effectively idle.
+    attachActiveListeners();
     setStatus(
       `SOFA_OK|on|${kind}|${Math.round(rect.width)}x${Math.round(rect.height)}|` +
       `${document.fullscreenElement || document.webkitFullscreenElement ? "pagefs" : "windowed"}`
@@ -530,6 +582,7 @@
 
   function refreshTargetAfterPageUpdate() {
     refreshQueued = false;
+    refreshFrame = 0;
     if (!activeKind) return;
     const target = findTarget(activeKind);
     if (!target) return;
@@ -552,22 +605,19 @@
   }
 
   document.addEventListener(EVENT_NAME, handleCommand, false);
-  window.addEventListener("pointermove", handlePointerMove, true);
-  window.addEventListener("pointerdown", handlePointerDown, true);
-  window.addEventListener("pointerup", handlePointerUp, true);
-  window.addEventListener("pointercancel", handlePointerCancel, true);
-  window.addEventListener("pointerleave", handlePointerLeave, true);
-  window.addEventListener("mouseup", handleMouseUpFallback, true);
-  window.addEventListener("blur", handleWindowBlur, true);
-  window.addEventListener("resize", handleViewportResize, true);
-  html.addEventListener("lostpointercapture", handlePointerCancel, true);
-  document.addEventListener("fullscreenchange", handleFullscreenChange, true);
-  document.addEventListener("webkitfullscreenchange", handleFullscreenChange, true);
-  new MutationObserver(() => {
-    if (!activeKind || refreshQueued) return;
-    refreshQueued = true;
-    requestAnimationFrame(refreshTargetAfterPageUpdate);
-  }).observe(html, { childList: true, subtree: true });
+
+  const helperAPI = {
+    version: VERSION,
+    destroy() {
+      clearLayout(false);
+      document.removeEventListener(EVENT_NAME, handleCommand, false);
+      if (html.getAttribute(READY_ATTR) === VERSION) html.removeAttribute(READY_ATTR);
+      if (globalThis.__sofaTheaterHelper === helperAPI) {
+        try { delete globalThis.__sofaTheaterHelper; } catch (_) {}
+      }
+    },
+  };
+  globalThis.__sofaTheaterHelper = helperAPI;
 
   html.setAttribute(READY_ATTR, VERSION);
   setStatus(`SOFA_OK|ready|${VERSION}`);

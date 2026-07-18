@@ -733,13 +733,14 @@ final class SyncEngine {
     /// Periodic presence: keeps names fresh and lets stale friends expire.
     func startPresence() {
         presenceTimer?.invalidate()
-        presenceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        presenceTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let state = self.state, state.inRoom else { return }
                 self.sendRaw(SyncMessage(type: "hello", name: state.displayName))
-                state.pruneFriends(olderThan: 16)
+                state.pruneFriends(olderThan: 31)
             }
         }
+        presenceTimer?.tolerance = 1.0
     }
 
     private func handleDisconnect() {

@@ -46,7 +46,7 @@ gh repo create sofa --public --source=. --remote=origin --push
 Once the source and `Info.plist` already contain the new version, publish it with:
 
 ```bash
-./release.sh 0.1.29 "Saved friends, direct invitations and smooth FaceTime volume"
+./release.sh 0.1.30 "Lower background usage on Apple Silicon and Intel Macs"
 ```
 
 The release script requires a clean `master` already pushed to GitHub. It builds

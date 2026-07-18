@@ -57,6 +57,8 @@ final class SocialService: ObservableObject {
     private var nameUpdateTask: Task<Void, Never>?
     private var started = false
     private var pendingFriendLink: String?
+    private var bootstrapRetryAttempt = 0
+    private var reconnectAttempt = 0
 
     private init() {}
 
@@ -171,6 +173,7 @@ final class SocialService: ObservableObject {
             }
             ready = true
             errorMessage = nil
+            bootstrapRetryAttempt = 0
             await refreshFriends()
             connectEvents()
             if let pendingFriendLink {
@@ -178,11 +181,15 @@ final class SocialService: ObservableObject {
                 acceptFriendLink(pendingFriendLink)
             }
         } catch {
-            errorMessage = "Friends are temporarily unavailable."
-            ready = false
+            if errorMessage != "Friends are temporarily unavailable." {
+                errorMessage = "Friends are temporarily unavailable."
+            }
+            if ready { ready = false }
             bootstrapRetryTask?.cancel()
+            let delay = retryDelay(attempt: bootstrapRetryAttempt)
+            bootstrapRetryAttempt += 1
             bootstrapRetryTask = Task {
-                try? await Task.sleep(for: .seconds(5))
+                try? await Task.sleep(for: delay)
                 guard !Task.isCancelled else { return }
                 await bootstrap()
             }
@@ -204,8 +211,14 @@ final class SocialService: ObservableObject {
     private func refreshFriends() async {
         do {
             let list: FriendList = try await request(path: "/friends")
-            friends = list.friends
-        } catch { errorMessage = "Couldn’t refresh friends." }
+            if friends != list.friends { friends = list.friends }
+            reconnectAttempt = 0
+            if errorMessage != nil { errorMessage = nil }
+        } catch {
+            if errorMessage != "Couldn’t refresh friends." {
+                errorMessage = "Couldn’t refresh friends."
+            }
+        }
     }
 
     private func connectEvents() {
@@ -230,6 +243,7 @@ final class SocialService: ObservableObject {
                 @unknown default: throw SocialError.invalidResponse
                 }
                 if let event = try? JSONDecoder().decode(Event.self, from: data) {
+                    reconnectAttempt = 0
                     handle(event)
                 }
                 if socket === task { receiveEvents(from: task) }
@@ -260,12 +274,23 @@ final class SocialService: ObservableObject {
 
     private func scheduleReconnect() {
         reconnectTask?.cancel()
+        let delay = retryDelay(attempt: reconnectAttempt)
+        reconnectAttempt += 1
         reconnectTask = Task {
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
+            reconnectTask = nil
             connectEvents()
             await refreshFriends()
         }
+    }
+
+    /// Back off aggressively while offline or while the relay is unavailable.
+    /// Jitter prevents every sleeping Mac from reconnecting on the same second.
+    private func retryDelay(attempt: Int) -> Duration {
+        let seconds = [5.0, 15.0, 30.0, 60.0, 300.0][min(attempt, 4)]
+        let jittered = seconds * Double.random(in: 0.85...1.15)
+        return .milliseconds(Int64(jittered * 1_000))
     }
 
     private func configureNotifications() {

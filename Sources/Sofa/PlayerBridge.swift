@@ -13,6 +13,8 @@ final class PlayerBridge {
     private var suppressUntil = Date.distantPast
     private var lastTickSent = Date.distantPast
     private var lastPublishedMetadata: String?
+    private var lastLivePublishedAt = Date.distantPast
+    private var nextPollAllowedAt = Date.distantPast
     private let queue = DispatchQueue(label: "sofa.playerbridge")
 
     /// Cinema must be removed from the tab that entered it, not whichever tab
@@ -87,7 +89,12 @@ final class PlayerBridge {
         "var sels=['[data-uia=video-title]','[data-uia=episode-title]','.video-title'];" +
         "for(var j=0;j<sels.length;j++){var el=document.querySelector(sels[j]);if(el&&el.innerText.trim()){t=el.innerText.trim().replace(/\\s*\\n\\s*/g,' — ');break}}}" +
         "var p=onNF?nfp():null;var tm=p?p.getCurrentTime()/1000:(v?v.currentTime:0);" +
-        "if(!v&&!p)return 'none';var data={time:tm,playing:v?!v.paused:false,poster:poster,title:t,url:mediaURL};" +
+        "function fsok(){var f=document.fullscreenElement||document.webkitFullscreenElement;if(!f)return false;" +
+        "var h=location.hostname.toLowerCase(),x=null;" +
+        "if(h==='youtube.com'||h.endsWith('.youtube.com'))x=document.querySelector('#movie_player');" +
+        "else if(h==='netflix.com'||h.endsWith('.netflix.com'))x=document.querySelector('.watch-video--player-view,[data-uia=watch-video]');" +
+        "return !!x&&(f===document.documentElement||f===document.body||f===x||f.contains(x)||x.contains(f))}" +
+        "if(!v&&!p)return 'none';var data={time:tm,playing:v?!v.paused:false,poster:poster,title:t,url:mediaURL,fullscreen:fsok()};" +
         "return 'SOFAJSON|'+encodeURIComponent(JSON.stringify(data))})()"
     }
 
@@ -136,11 +143,11 @@ final class PlayerBridge {
         let reserve = reserveCallColumn ? "true" : "false"
         return
             "(function(){var d=document.documentElement;if(!d)return 'SOFA_ERR|no-document';" +
-            "if(d.getAttribute('data-sofa-theater-helper')!=='0.1.29-friends'){\(theaterHelperBootstrapJS)}" +
+            "if(d.getAttribute('data-sofa-theater-helper')!=='0.1.30-efficiency'){\(theaterHelperBootstrapJS)}" +
             "var w=\(reserve)?'auto':'0';" +
             "d.setAttribute('data-sofa-theater-command','\(command)|'+w);" +
             "d.removeAttribute('data-sofa-theater-status');" +
-            "document.dispatchEvent(new Event('sofa-theater-command-0.1.29-friends'));" +
+            "document.dispatchEvent(new Event('sofa-theater-command-0.1.30-efficiency'));" +
             "return d.getAttribute('data-sofa-theater-status')||'SOFA_ERR|helper-no-response'})()"
     }
 
@@ -556,9 +563,15 @@ final class PlayerBridge {
         self.player = player
         lastState = nil
         lastPublishedMetadata = nil
-        timer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: true) { [weak self] _ in
+        lastLivePublishedAt = .distantPast
+        nextPollAllowedAt = .distantPast
+        let pollTimer = Timer(timeInterval: 0.85, repeats: true) { [weak self] _ in
             self?.poll()
         }
+        pollTimer.tolerance = 0.05
+        timer = pollTimer
+        RunLoop.main.add(pollTimer, forMode: .common)
+        poll()
     }
 
     func stop() {
@@ -567,6 +580,18 @@ final class PlayerBridge {
         player = nil
         lastState = nil
         lastPublishedMetadata = nil
+        lastLivePublishedAt = .distantPast
+        nextPollAllowedAt = .distantPast
+    }
+
+    /// Resume a slow/idle poll immediately after an app launch or a remote
+    /// command. This keeps the adaptive backoff invisible to the viewer.
+    func wakePolling() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.player != nil else { return }
+            self.nextPollAllowedAt = .distantPast
+            self.poll()
+        }
     }
 
     // MARK: - Polling (detect local changes → broadcast)
@@ -574,7 +599,7 @@ final class PlayerBridge {
     private var polling = false
 
     private func poll() {
-        guard let player, !polling else { return }
+        guard let player, !polling, Date() >= nextPollAllowedAt else { return }
 
         // Never talk to an app that isn't running: `tell application "X"` would
         // *launch* it, so a player the user just quit would spring back to life.
@@ -583,11 +608,13 @@ final class PlayerBridge {
            NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty {
             Task { @MainActor in
                 guard self.player == player, AppState.shared.playerChoice == player else { return }
-                AppState.shared.extLive = .nothingOpen
-                AppState.shared.nowPlaying = nil
-                AppState.shared.nowPlayingPoster = nil
-                AppState.shared.nowPlayingURL = nil
+                if AppState.shared.extLive != .nothingOpen { AppState.shared.extLive = .nothingOpen }
+                if AppState.shared.nowPlaying != nil { AppState.shared.nowPlaying = nil }
+                if AppState.shared.nowPlayingPoster != nil { AppState.shared.nowPlayingPoster = nil }
+                if AppState.shared.nowPlayingURL != nil { AppState.shared.nowPlayingURL = nil }
+                AppState.shared.playerBridgeReportedFullscreen(false, for: player)
                 self.lastState = nil
+                self.nextPollAllowedAt = Date().addingTimeInterval(4)
             }
             return
         }
@@ -608,31 +635,51 @@ final class PlayerBridge {
 
         if let err {
             if err.range(of: #"JavaScript (from|through) Apple ?[Ee]vents"#, options: .regularExpression) != nil {
-                state.extLive = .blocked(browser: player)
+                let next = ExtLiveState.blocked(browser: player)
+                if state.extLive != next { state.extLive = next }
             } else if err.range(of: #"not (allowed|authorized)|Not authorized"#, options: .regularExpression) != nil {
-                state.extLive = .notAuthorized
+                if state.extLive != .notAuthorized { state.extLive = .notAuthorized }
             } else {
-                state.extLive = .nothingOpen
+                if state.extLive != .nothingOpen { state.extLive = .nothingOpen }
             }
             lastState = nil
+            // Permission errors and a temporarily busy browser should not burn
+            // CPU by spawning osascript continuously. Do not report fullscreen
+            // false here: a transient Apple Event timeout must not close Theater.
+            nextPollAllowedAt = Date().addingTimeInterval(3)
             return
         }
 
         guard let out, out != "none", !out.isEmpty else {
-            state.extLive = .nothingOpen
+            if state.extLive != .nothingOpen { state.extLive = .nothingOpen }
+            state.playerBridgeReportedFullscreen(false, for: player)
             lastState = nil
+            nextPollAllowedAt = Date().addingTimeInterval(3)
             return
         }
 
         let media = parseMediaResult(out)
         guard let media else {
-            state.extLive = .nothingOpen
+            if state.extLive != .nothingOpen { state.extLive = .nothingOpen }
+            state.playerBridgeReportedFullscreen(false, for: player)
             lastState = nil
+            nextPollAllowedAt = Date().addingTimeInterval(3)
             return
         }
         let time = media.time
         let playing = media.playing
-        state.extLive = .playing(time: time, isPlaying: playing)
+        let now = Date()
+        let playingChanged: Bool
+        if case .playing(_, let previousPlaying) = state.extLive {
+            playingChanged = previousPlaying != playing
+        } else {
+            playingChanged = true
+        }
+        if playingChanged || now.timeIntervalSince(lastLivePublishedAt) >= 1.5 {
+            state.extLive = .playing(time: time, isPlaying: playing)
+            lastLivePublishedAt = now
+        }
+        state.playerBridgeReportedFullscreen(media.fullscreen, for: player)
         updateNowPlaying(
             title: media.title,
             poster: media.poster,
@@ -642,7 +689,6 @@ final class PlayerBridge {
             state: state
         )
 
-        let now = Date()
         if let last = lastState, now >= suppressUntil {
             let expected = last.time + (last.playing ? now.timeIntervalSince(last.at) : 0)
             let jumped = abs(time - expected) > 3
@@ -656,10 +702,13 @@ final class PlayerBridge {
             }
         }
         lastState = (time, playing, now)
+        // Keep controls and sync crisp during playback, while avoiding thousands
+        // of short-lived osascript processes when a movie is paused.
+        nextPollAllowedAt = now.addingTimeInterval(playing ? 0.8 : 1.5)
     }
 
     /// Publishes the title + poster locally and tells the room, but only when
-    /// the title actually changes — the poll runs every 0.7s.
+    /// the title actually changes — the poll runs roughly once per second.
     @MainActor
     private func updateNowPlaying(
         title: String,
@@ -672,9 +721,9 @@ final class PlayerBridge {
         let cleanTitle = title.isEmpty ? nil : title
         let cleanPoster = poster.hasPrefix("http") ? poster : nil
         let cleanURL = url.flatMap(Self.canonicalMediaURL)
-        state.nowPlayingPoster = cleanPoster
-        state.nowPlayingURL = cleanURL
-        state.nowPlaying = cleanTitle
+        if state.nowPlayingPoster != cleanPoster { state.nowPlayingPoster = cleanPoster }
+        if state.nowPlayingURL != cleanURL { state.nowPlayingURL = cleanURL }
+        if state.nowPlaying != cleanTitle { state.nowPlaying = cleanTitle }
         let signature = [cleanTitle ?? "", cleanPoster ?? "", cleanURL ?? ""].joined(separator: "\u{1F}")
         guard signature != lastPublishedMetadata else { return }
         lastPublishedMetadata = signature
@@ -692,6 +741,7 @@ final class PlayerBridge {
         let poster: String
         let title: String
         let url: String?
+        let fullscreen: Bool?
     }
 
     private func parseMediaResult(_ output: String) -> MediaResult? {
@@ -706,7 +756,8 @@ final class PlayerBridge {
                 playing: (object["playing"] as? Bool) ?? false,
                 poster: object["poster"] as? String ?? "",
                 title: object["title"] as? String ?? "",
-                url: object["url"] as? String
+                url: object["url"] as? String,
+                fullscreen: object["fullscreen"] as? Bool
             )
         }
         let parts = output.split(separator: "|", maxSplits: 3, omittingEmptySubsequences: false)
@@ -718,7 +769,8 @@ final class PlayerBridge {
             playing: parts[1].trimmingCharacters(in: .whitespaces) == "true",
             poster: parts.count >= 3 ? String(parts[2]).trimmingCharacters(in: .whitespacesAndNewlines) : "",
             title: parts.count >= 4 ? String(parts[3]).trimmingCharacters(in: .whitespacesAndNewlines) : "",
-            url: nil
+            url: nil,
+            fullscreen: nil
         )
     }
 
@@ -794,6 +846,7 @@ final class PlayerBridge {
             break
         }
         lastState = nil // resync baseline on next poll
+        wakePolling()
     }
 
     /// Opens the friend's canonical page only after an explicit click, then

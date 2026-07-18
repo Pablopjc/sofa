@@ -28,8 +28,10 @@ enum WindowArranger {
 
     /// A running process is not necessarily a live call. Once Accessibility is
     /// available, require a plausible visible window as well.
-    static func runningCallApp() -> CallApp? {
-        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+    static func runningCallApp(in running: Set<String>? = nil) -> CallApp? {
+        let running = running ?? Set(
+            NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier }
+        )
         let candidates = knownCallApps.filter { running.contains($0.bundleID) }
         guard hasAccessibilityPermission else { return candidates.first }
         return candidates.first { bestWindow(ofBundleID: $0.bundleID, purpose: .call) != nil }

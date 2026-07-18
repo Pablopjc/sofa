@@ -56,14 +56,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // Re-fit the panel whenever the content changes shape (entering a room,
         // switching player, a card appearing). objectWillChange fires *before*
         // the change lands, so measure on the next turn of the run loop.
-        AppState.shared.objectWillChange
+        Publishers.Merge3(
+            AppState.shared.objectWillChange,
+            AppState.shared.builtin.objectWillChange,
+            SocialService.shared.objectWillChange
+        )
+            .debounce(for: .milliseconds(50), scheduler: RunLoop.main)
             .sink { [weak self] _ in
-                DispatchQueue.main.async { self?.resizePanelToFit() }
-            }
-            .store(in: &cancellables)
-        AppState.shared.builtin.objectWillChange
-            .sink { [weak self] _ in
-                DispatchQueue.main.async { self?.resizePanelToFit() }
+                // Hidden menu-bar panels do not need continuous layout work;
+                // showPanel() measures once immediately before displaying.
+                guard self?.panel?.isVisible == true else { return }
+                self?.resizePanelToFit()
             }
             .store(in: &cancellables)
 

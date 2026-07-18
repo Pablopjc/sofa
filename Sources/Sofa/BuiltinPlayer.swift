@@ -16,9 +16,9 @@ final class BuiltinPlayer: ObservableObject {
     private var suppressUntil = Date.distantPast
     private var lastKnownTime: Double = 0
     private var wasPlaying = false
+    private var lastTickSent = Date.distantPast
     private var rateObservation: NSKeyValueObservation?
     private var timeJumpObserver: Any?
-    private var tickTimer: Timer?
     private var periodicObserver: Any?
 
     init() {
@@ -53,13 +53,17 @@ final class BuiltinPlayer: ObservableObject {
         periodicObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main
         ) { [weak self] time in
-            DispatchQueue.main.async { self?.lastKnownTime = time.seconds }
-        }
-
-        tickTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             DispatchQueue.main.async {
-                guard let self, self.hasMedia, self.player.rate > 0 else { return }
-                self.state?.sync.send(SyncMessage(type: "tick", time: self.player.currentTime().seconds))
+                guard let self else { return }
+                self.lastKnownTime = time.seconds
+                // AVPlayer already gives us this callback while advancing. Use
+                // it for drift ticks instead of waking a second timer for the
+                // entire lifetime of this menu-bar app.
+                let now = Date()
+                guard self.hasMedia, self.player.rate > 0,
+                      now.timeIntervalSince(self.lastTickSent) >= 5 else { return }
+                self.lastTickSent = now
+                self.state?.sync.send(SyncMessage(type: "tick", time: time.seconds))
             }
         }
     }
@@ -68,6 +72,7 @@ final class BuiltinPlayer: ObservableObject {
 
     func load(url: URL) {
         player.replaceCurrentItem(with: AVPlayerItem(url: url))
+        lastTickSent = Date()
         hasMedia = true
         mediaName = url.lastPathComponent
         state?.mediaActive = true
@@ -87,6 +92,7 @@ final class BuiltinPlayer: ObservableObject {
     func pauseAndUnload() {
         player.pause()
         player.replaceCurrentItem(with: nil)
+        lastTickSent = .distantPast
         hasMedia = false
         mediaName = ""
     }

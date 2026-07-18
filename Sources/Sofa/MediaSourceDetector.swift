@@ -8,8 +8,11 @@ import AppKit
 /// status for the *selected* player still comes from PlayerBridge.
 enum MediaSourceDetector {
     @MainActor
-    static func runningPlayers() -> [PlayerChoice] {
-        let runningIDs = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+    static func runningBundleIDs() -> Set<String> {
+        Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+    }
+
+    static func runningPlayers(in runningIDs: Set<String>) -> [PlayerChoice] {
         return PlayerChoice.externalPlayers.filter {
             guard let bundleID = $0.bundleID else { return false }
             return runningIDs.contains(bundleID)
@@ -33,9 +36,7 @@ enum MediaSourceDetector {
         )
     ]
 
-    @MainActor
-    static func runningUnsupported() -> [UnsupportedApp] {
-        let runningIDs = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+    static func runningUnsupported(in runningIDs: Set<String>) -> [UnsupportedApp] {
         return knownUnsupported.filter { runningIDs.contains($0.bundleID) }
     }
 }

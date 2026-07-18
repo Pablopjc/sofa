@@ -7,9 +7,9 @@ echo "▸ Compiling (release, universal arm64 + x86_64)…"
 swift build -c release --arch arm64 --arch x86_64 2>&1 | tail -1
 
 APP="dist/Sofa.app"
-BIN=$(find .build -path "*Products/Release/Sofa" -type f 2>/dev/null | head -1)
-[ -n "$BIN" ] && [ -f "$BIN" ] || BIN=".build/apple/Products/Release/Sofa"
-[ -f "$BIN" ] || { echo "binary not found"; find .build -name Sofa -type f -maxdepth 5; exit 1; }
+BIN_DIR=$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)
+BIN="$BIN_DIR/Sofa"
+[ -f "$BIN" ] || { echo "binary not found at $BIN"; exit 1; }
 lipo -info "$BIN" | sed 's/^/▸ /'
 
 echo "▸ Assembling ${APP}…"

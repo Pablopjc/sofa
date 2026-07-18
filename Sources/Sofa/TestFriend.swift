@@ -70,12 +70,13 @@ final class TestFriend: ObservableObject {
 
     private func startPresence() {
         presenceTimer?.invalidate()
-        presenceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        presenceTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.connected else { return }
                 self.send(SyncMessage(type: "hello", name: "Test Friend", token: self.roomToken))
             }
         }
+        presenceTimer?.tolerance = 1.0
     }
 
     // MARK: - Things the "friend" can do
