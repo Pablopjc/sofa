@@ -59,6 +59,7 @@ final class SocialService: ObservableObject {
     private var pendingFriendLink: String?
     private var bootstrapRetryAttempt = 0
     private var reconnectAttempt = 0
+    private var modernNotificationsAllowed = false
 
     private init() {}
 
@@ -259,10 +260,15 @@ final class SocialService: ObservableObject {
         switch event.type {
         case "party_invite":
             guard let invite = event.invite, invite.expiresAt / 1000 > Date().timeIntervalSince1970 else { return }
+            let isNew = !invitations.contains { $0.id == invite.id }
             invitations.removeAll { $0.id == invite.id }
             invitations.append(invite)
             postNotification(for: invite)
             NotificationCenter.default.post(name: .sofaShowPanel, object: nil)
+            AppState.shared.showToast("\(invite.fromName) invited you to watch together")
+            // A banner needs a notarized app; until then, a sound makes the
+            // panel-opening invitation impossible to miss.
+            if isNew { NSSound(named: "Ping")?.play() }
         case "friend_added", "friends_changed":
             Task { await refreshFriends() }
             if let friend = event.friend {
@@ -301,7 +307,13 @@ final class SocialService: ObservableObject {
             intentIdentifiers: [], options: []
         )
         UNUserNotificationCenter.current().setNotificationCategories([category])
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // macOS only lets notarized apps (an Apple Developer identity) post
+        // Notification Center banners. Sofa is self-signed, so this is denied —
+        // we fall back to opening the panel with the invitation, plus a sound.
+        // If the app is ever notarized, banners light up with no code change.
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+            Task { @MainActor in self?.modernNotificationsAllowed = granted }
+        }
     }
 
     private func postNotification(for invite: SofaPartyInvitation) {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sofa Theater",
-  "version": "0.1.30",
+  "version": "0.1.32",
   "description": "A clean Theater layout for Sofa watch parties. No chat, overlays, or page controls.",
   "content_scripts": [
     {
@@ -11,7 +11,9 @@
         "https://*.youtube.com/*",
         "https://youtube.com/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_start",
       "all_frames": false
     }
