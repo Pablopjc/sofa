@@ -230,13 +230,12 @@ struct IdleView: View {
     }
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 12) {
             // Hero
-            VStack(spacing: 6) {
+            VStack(spacing: 5) {
                 Image(systemName: "sofa.fill")
-                    .font(.system(size: 34, weight: .medium))
+                    .font(.system(size: 32, weight: .medium))
                     .foregroundStyle(Color.accentColor.gradient)
-                    .padding(.top, 2)
                 Text("Movie nights, together — apart.")
                     .font(.system(size: 15, weight: .semibold))
                 Text("Play, pause and skip stay perfectly in sync\nwith everyone in your party.")
@@ -245,24 +244,10 @@ struct IdleView: View {
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
-            .padding(.bottom, 2)
 
-            FriendsCard()
-
-            // Identity: quiet inline row, not a form field shouting for attention.
-            HStack(spacing: 6) {
-                AvatarView(name: state.displayName, size: 22)
-                Text("Watching as")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                TextField("Name", text: displayName)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                    .frame(width: 112, alignment: .leading)
-                    .onSubmit { normalizeDisplayName() }
-            }
-            .padding(.horizontal, 10).padding(.vertical, 5)
-            .background(Color.primary.opacity(0.05), in: Capsule())
+            // You on the left, your people on the right — one compact strip
+            // instead of a floating name pill plus a separate explainer card.
+            IdentityFriendsRow(displayName: displayName, normalize: normalizeDisplayName)
 
             Button {
                 normalizeDisplayName()
@@ -506,56 +491,75 @@ struct InviteCard: View {
     }
 }
 
-struct FriendsCard: View {
+/// One strip: your identity on the left, your saved friends on the right.
+/// Replaces the old floating "Watching as" pill (mostly empty space) and the
+/// separate FRIENDS explainer card that used to sit above the main action.
+struct IdentityFriendsRow: View {
+    let displayName: Binding<String>
+    let normalize: () -> Void
+
+    @ObservedObject var state = AppState.shared
     @ObservedObject var social = SocialService.shared
 
     var body: some View {
-        if social.ready {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack {
-                    Text("FRIENDS")
-                        .font(.system(size: 10.5, weight: .semibold)).kerning(0.8)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if !social.friends.isEmpty {
-                        Text("\(social.friends.count) saved")
-                            .font(.system(size: 10)).foregroundStyle(.tertiary)
-                    }
-                }
+        VStack(spacing: 4) {
+            HStack(spacing: 8) {
+                // You: avatar + editable name, sized to its content.
+                AvatarView(name: state.displayName, size: 24)
+                TextField("Your name", text: displayName)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .lineLimit(1)
+                    .frame(minWidth: 40, maxWidth: 130)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .onSubmit { normalize() }
+                    .help("The name friends see in your parties")
 
-                if social.friends.isEmpty {
-                    Text("Send your friend link once. After that, invitations arrive directly in Sofa.")
-                        .font(.system(size: 10.5)).foregroundStyle(.secondary)
-                } else {
-                    HStack(spacing: 5) {
-                        ForEach(social.friends.prefix(5)) { friend in
+                Spacer(minLength: 8)
+
+                // Your people: overlapping avatars + add button, like the
+                // party card uses in-room.
+                if social.ready && !social.friends.isEmpty {
+                    HStack(spacing: -6) {
+                        ForEach(social.friends.prefix(4)) { friend in
                             AvatarView(name: friend.name, size: 22)
-                                .help(friend.name)
+                                .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
+                                .help(friend.name + (friend.online ? " · online" : ""))
                         }
-                        if social.friends.count > 5 {
-                            Text("+\(social.friends.count - 5)")
-                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
-                        }
-                        Spacer()
+                    }
+                    if social.friends.count > 4 {
+                        Text("+\(social.friends.count - 4)")
+                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
                     }
                 }
 
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(social.friendLink, forType: .string)
-                    AppState.shared.showToast("Friend link copied — it only needs to be sent once.")
-                } label: {
-                    Label("Copy my friend link", systemImage: "person.badge.plus")
-                        .font(.system(size: 10.5))
+                if social.ready {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(social.friendLink, forType: .string)
+                        AppState.shared.showToast("Friend link copied — send it once; invitations then arrive right in Sofa.")
+                    } label: {
+                        if social.friends.isEmpty {
+                            Label("Add a friend", systemImage: "person.badge.plus")
+                                .font(.system(size: 11))
+                        } else {
+                            Image(systemName: "person.badge.plus")
+                                .font(.system(size: 11.5))
+                        }
+                    }
+                    .sofaGlassButton()
+                    .disabled(social.friendLink.isEmpty)
+                    .help("Copy your friend link — friends who add it can invite you directly")
                 }
-                .sofaGlassButton()
-                .disabled(social.friendLink.isEmpty)
             }
-            .padding(11)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 11))
-        } else if let error = social.errorMessage {
-            Text(error).font(.system(size: 10.5)).foregroundStyle(.tertiary)
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+
+            if let error = social.errorMessage {
+                Text(error)
+                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 }
