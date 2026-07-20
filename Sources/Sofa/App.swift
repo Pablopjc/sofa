@@ -263,6 +263,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             ? .screenSaver
             : .statusBar
         panel.makeKeyAndOrderFront(nil)
+        // Without this, AppKit auto-focuses the first text field (the name
+        // editor) and selects its text — jarring on every open. Give focus
+        // to the panel itself instead.
+        panel.makeFirstResponder(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 

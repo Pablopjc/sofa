@@ -122,6 +122,8 @@ struct TitleBar: View {
                     AppState.shared.welcomeDone = false
                 }
                 Divider()
+                Button("Try it solo — Test Zone") { state.enterTestZone() }
+                    .disabled(state.inRoom || state.hosting || state.joining)
                 Button("Quit Sofa") { NSApp.terminate(nil) }
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -230,9 +232,9 @@ struct IdleView: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 9) {
             // Hero
-            VStack(spacing: 5) {
+            VStack(spacing: 4) {
                 Image(systemName: "sofa.fill")
                     .font(.system(size: 32, weight: .medium))
                     .foregroundStyle(Color.accentColor.gradient)
@@ -267,6 +269,7 @@ struct IdleView: View {
                     .padding(.vertical, 5)
             }
             .sofaProminentButton()
+            .buttonBorderShape(.capsule)
             .controlSize(.large)
             .disabled(state.hosting || state.joining)
 
@@ -276,17 +279,6 @@ struct IdleView: View {
                     .foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Button {
-                normalizeDisplayName()
-                state.hostLANRoom()
-            } label: {
-                Label("Host on this local network instead", systemImage: "network")
-                    .font(.system(size: 10.5))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.tertiary)
-            .disabled(state.hosting || state.joining)
 
             HStack(spacing: 10) {
                 Rectangle().fill(.separator).frame(height: 1)
@@ -309,6 +301,7 @@ struct IdleView: View {
                         state.join()
                     }
                         .sofaGlassButton()
+                        .buttonBorderShape(.capsule)
                         .disabled(state.hosting || state.joining)
                 }
                 if let err = state.joinError {
@@ -321,16 +314,6 @@ struct IdleView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Button {
-                state.enterTestZone()
-            } label: {
-                Label("Try it solo — Test Zone", systemImage: "testtube.2")
-                    .font(.system(size: 11.5))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .padding(.top, 2)
-            .disabled(state.hosting || state.joining)
         }
         .padding(.horizontal, 18).padding(.bottom, 14)
     }
@@ -450,12 +433,13 @@ struct InviteCard: View {
             }
 
             // The room code is the star; the raw link stays behind Copy/Share.
+            // Smaller boxes + fixedSize buttons so "Copy Link" never truncates.
             HStack(spacing: 3) {
                 ForEach(Array(roomCode.enumerated()), id: \.offset) { _, ch in
                     Text(String(ch))
-                        .font(.system(size: 17, weight: .bold, design: .monospaced))
-                        .frame(width: 26, height: 32)
-                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
+                        .font(.system(size: 15, weight: .bold, design: .monospaced))
+                        .frame(width: 22, height: 28)
+                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
                 }
                 Spacer(minLength: 8)
                 Button("Copy Link") {
@@ -464,6 +448,7 @@ struct InviteCard: View {
                     state.showToast("Invite link copied — paste it in iMessage")
                 }
                 .sofaGlassButton()
+                .fixedSize()
                 ShareButton(link: state.inviteLink)
             }
 
@@ -471,6 +456,7 @@ struct InviteCard: View {
                  ? "Works across networks. Sofa relays only sync controls — never video or call audio."
                  : "Local party: friends must be on the same local network.")
                 .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
 
             if state.roomIsOnline && !social.friends.isEmpty {
                 Divider().opacity(0.4)
@@ -503,7 +489,7 @@ struct IdentityFriendsRow: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 // You: avatar + editable name, sized to its content.
                 AvatarView(name: state.displayName, size: 24)
                 TextField("Your name", text: displayName)
@@ -515,7 +501,11 @@ struct IdentityFriendsRow: View {
                     .onSubmit { normalize() }
                     .help("The name friends see in your parties")
 
-                Spacer(minLength: 8)
+                // A small, fixed gap — not a Spacer — so the name and the
+                // friends/add control stay snug instead of stretching apart.
+                if social.ready {
+                    Divider().frame(height: 16).opacity(0.5)
+                }
 
                 // Your people: overlapping avatars + add button, like the
                 // party card uses in-room.
@@ -548,12 +538,17 @@ struct IdentityFriendsRow: View {
                         }
                     }
                     .sofaGlassButton()
+                    .buttonBorderShape(.capsule)
                     .disabled(social.friendLink.isEmpty)
                     .help("Copy your friend link — friends who add it can invite you directly")
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+            .fixedSize(horizontal: true, vertical: false)
+            // Horizontal inset matches the visual top/bottom gap around the
+            // avatar and the Add-a-friend capsule, so the ring of space
+            // inside the pill reads even all the way around.
+            .padding(.horizontal, 7).padding(.vertical, 6)
+            .background(Color.primary.opacity(0.045), in: Capsule())
 
             if let error = social.errorMessage {
                 Text(error)
@@ -691,6 +686,7 @@ struct PlayerCard: View {
             if state.detectedSources.isEmpty && state.playerChoice != .builtin {
                 Text("Open a movie in QuickTime, VLC, Apple TV or your browser (YouTube, Netflix, Prime Video…) and it’ll show up here.")
                     .font(.system(size: 11)).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 2)
             }
 
@@ -721,10 +717,12 @@ struct PlayerCard: View {
                 Divider().opacity(0.4)
                 Text(state.playerChoice.hint)
                     .font(.system(size: 11)).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
                 if liveIsWarning {
                     Text(liveText)
                         .font(.system(size: 11))
                         .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -1177,6 +1175,7 @@ struct AudioCard: View {
                  ? "Call changes only FaceTime. Audio is processed locally and is never saved or sent."
                  : "Start a FaceTime call to control its volume independently from the movie.")
                 .font(.system(size: 11)).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
