@@ -10,7 +10,7 @@ Sofa is a tiny macOS menu bar app for long-distance movie nights. One person sta
 - **One link to watch together.** `sofa://` invite links carry the room and its secret — click and you're in. Works across different homes, networks and countries via an encrypted relay; same-Wi-Fi mode needs no internet relay at all.
 - **Saved friends.** Exchange a friend link once, and from then on invite each other from inside the app — the invitation pops up on the friend's Mac with one-click Join.
 - **Theater mode.** Blacks out the desktop, makes the movie as big as it fits, and keeps your FaceTime call beside it — no overlap. There's even an independent FaceTime volume slider so the call never drowns the movie.
-- **Light on your Mac.** Native Swift, ~15 MB on disk, 0% CPU when idle, universal binary for Apple Silicon and Intel.
+- **Light on your Mac.** Native Swift, ~18 MB on disk, 0% CPU when idle, universal binary for Apple Silicon and Intel.
 
 ## Install
 
