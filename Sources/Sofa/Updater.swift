@@ -212,7 +212,8 @@ final class Updater: ObservableObject {
         try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", newApp.path])
         let installedRequirement = try designatedRequirement(for: destination)
         let downloadedRequirement = try designatedRequirement(for: newApp)
-        guard downloadedRequirement == installedRequirement else {
+        guard isAcceptableRequirement(installed: installedRequirement,
+                                      downloaded: downloadedRequirement) else {
             throw UpdaterError.badArchive("The downloaded app was signed by a different Sofa identity.")
         }
 
@@ -257,6 +258,26 @@ final class Updater: ObservableObject {
             throw UpdaterError.command(out.isEmpty ? "Command failed: \(path)" : out)
         }
         return out
+    }
+
+    /// Whether a downloaded build's code-signing identity is trusted to
+    /// replace the installed one.
+    ///
+    /// Historically every build was signed with the local "Sofa Self-Signed"
+    /// identity, so requirements had to match exactly. Sofa now ships signed
+    /// with Pablo's Apple Developer ID; installs from the self-signed era must
+    /// be able to take that one-time trust *upgrade* — but only to a signature
+    /// that is (a) anchored in Apple's Developer ID program, (b) for exactly
+    /// this bundle identifier, and (c) issued to Pablo's team. Anything else
+    /// (another team's cert, an unsigned or ad-hoc build, a different bundle)
+    /// is still rejected. Never the other way round: a Developer ID install
+    /// won't "downgrade" to a self-signed build.
+    nonisolated static func isAcceptableRequirement(installed: String, downloaded: String) -> Bool {
+        if installed == downloaded { return true }
+        return downloaded.contains("identifier \"com.pablo.sofa.native\"")
+            && downloaded.contains("anchor apple generic")
+            && downloaded.contains("certificate leaf[field.1.2.840.113635.100.6.1.13]")
+            && downloaded.contains("certificate leaf[subject.OU] = SX87SFWP3N")
     }
 
     private nonisolated static func designatedRequirement(for app: URL) throws -> String {

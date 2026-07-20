@@ -263,6 +263,7 @@ final class SocialService: ObservableObject {
             let isNew = !invitations.contains { $0.id == invite.id }
             invitations.removeAll { $0.id == invite.id }
             invitations.append(invite)
+            if !modernNotificationsAllowed { requestBannerAuthorization() }
             postNotification(for: invite)
             NotificationCenter.default.post(name: .sofaShowPanel, object: nil)
             AppState.shared.showToast("\(invite.fromName) invited you to watch together")
@@ -311,6 +312,13 @@ final class SocialService: ObservableObject {
         // Notification Center banners. Sofa is self-signed, so this is denied —
         // we fall back to opening the panel with the invitation, plus a sound.
         // If the app is ever notarized, banners light up with no code change.
+        requestBannerAuthorization()
+    }
+
+    /// Safe to call repeatedly. On this Mac (macOS 27 beta) banners are still
+    /// refused even for the notarized build; if Apple's side ever starts
+    /// allowing them (account propagation, OS update), this picks it up.
+    private func requestBannerAuthorization() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
             Task { @MainActor in self?.modernNotificationsAllowed = granted }
         }

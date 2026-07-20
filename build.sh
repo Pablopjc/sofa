@@ -52,14 +52,30 @@ else
   echo "▸ Xcode actool not found — classic .icns only."
 fi
 
-# Sign with a stable self-signed identity if present, so macOS keeps
-# permissions (Accessibility, Automation) across rebuilds. Ad-hoc signing gives
-# every build a new code hash, which makes the system forget every grant and
-# re-prompt endlessly. See Design/make-signing-cert.sh to (re)create the cert.
-IDENTITY="Sofa Self-Signed"
-if security find-identity -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
-  echo "▸ Signing with stable identity ($IDENTITY)…"
-  codesign --force --deep --sign "$IDENTITY" "$APP" > /dev/null 2>&1
+# Sign with a Developer ID if one is installed — required for notarization,
+# which is what skips the Gatekeeper warning for friends. Falls back to the
+# stable self-signed identity (permissions survive rebuilds, but no
+# notarization) and finally to ad-hoc. See Design/make-signing-cert.sh to
+# (re)create the self-signed cert.
+#
+# SOFA_SIGNING=self-signed forces the legacy identity. Needed exactly once, for
+# the 0.1.33 migration bridge: updaters older than 0.1.33 only accept an update
+# whose signature is identical to their own, so the release that *teaches* the
+# updater to accept Developer ID must itself still carry the old signature.
+DEVELOPER_ID=$(security find-identity -v -p codesigning 2>/dev/null \
+  | grep -o '"Developer ID Application:[^"]*"' | head -1 | tr -d '"' || true)
+if [ "${SOFA_SIGNING:-auto}" = "self-signed" ]; then
+  DEVELOPER_ID=""
+fi
+
+if [ -n "$DEVELOPER_ID" ]; then
+  echo "▸ Signing with Developer ID ($DEVELOPER_ID), hardened runtime…"
+  codesign --force --deep --options runtime --timestamp \
+    --entitlements Sofa.entitlements \
+    --sign "$DEVELOPER_ID" "$APP" > /dev/null
+elif security find-identity -p codesigning 2>/dev/null | grep -q "Sofa Self-Signed"; then
+  echo "▸ Signing with stable identity (Sofa Self-Signed — not notarizable)…"
+  codesign --force --deep --sign "Sofa Self-Signed" "$APP" > /dev/null 2>&1
 else
   echo "▸ Signing (ad-hoc — run Design/make-signing-cert.sh for stable permissions)…"
   codesign --force --sign - "$APP" > /dev/null 2>&1

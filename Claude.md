@@ -8,8 +8,42 @@ No trabajar sobre `../Sofa`: es la aplicación Electron antigua (**Sofa Legacy**
 - La versión publicada actual está en `Info.plist` (`CFBundleShortVersionString` y `CFBundleVersion`). Ambas deben ser iguales.
 - Cada cambio publicado incrementa el último número: después de `0.1.30`, usar `0.1.31`.
 - El binario debe seguir siendo universal: `arm64` y `x86_64`.
-- La firma estable se llama `Sofa Self-Signed`. No sustituirla por firma ad-hoc: macOS perdería permisos de Automatización, Accesibilidad y acceso al llavero; además, el actualizador rechaza una app firmada con otra identidad.
 - Las copias de recuperación publicadas se guardan fuera del repositorio en `/Users/pablo/Downloads/Sofa-Stable/<versión>/`.
+
+## Firma y notarización
+
+Desde la 0.1.34, la firma oficial es el certificado de Apple
+**`Developer ID Application: Pablo Jimenez (SX87SFWP3N)`** (en el llavero de
+login), con hardened runtime y el entitlement de Apple Events
+(`Sofa.entitlements` — sin él, todo el control AppleScript de reproductores
+dejaría de funcionar). `build.sh` lo detecta y lo usa automáticamente;
+`package-release.sh` notariza (`xcrun notarytool submit --keychain-profile
+"Sofa" --wait`) y grapa el ticket en la app. Las credenciales de notarización
+están guardadas en el llavero bajo el perfil `Sofa` (recrear con
+`xcrun notarytool store-credentials`). El DMG no se grapa: el ticket pertenece
+a la app, y Gatekeeper comprueba la app al abrirla.
+
+- La identidad antigua `Sofa Self-Signed` sigue en el llavero como fallback si
+  el Developer ID desapareciera. `SOFA_SIGNING=self-signed ./build.sh` fuerza
+  su uso.
+- **Migración de confianza del actualizador**: los updaters ≤ 0.1.32 solo
+  aceptan una actualización con firma idéntica a la instalada. Por eso la
+  0.1.33 (puente) se publicó firmada con `Sofa Self-Signed` pero con la regla
+  nueva (`Updater.isAcceptableRequirement`), que además de la igualdad acepta
+  el salto único a Developer ID del equipo `SX87SFWP3N` con el mismo bundle ID
+  (nunca a la inversa: no hay downgrade de Developer ID a autofirmada). La ruta
+  de actualización de un amigo antiguo es 0.1.32 → 0.1.33 → 0.1.34+.
+- La regla vive duplicada en `Tests/UpdaterTrustHarness/TrustRule.swift`;
+  `scripts/check-trust-rule.sh` falla si las dos copias divergen y ejecuta el
+  harness. Correr en cada release.
+- Al cambiar la identidad de firma, macOS pierde los permisos TCC concedidos
+  (Accesibilidad, Automatización); los usuarios los verán pedirse de nuevo una
+  vez. Avisarlo en las notas de la release.
+- **Notificaciones**: ni siquiera la app notarizada consigue banners en este
+  Mac (macOS 27 beta devuelve `UNErrorDomain Code=1`); posiblemente membresía
+  aún propagándose o comportamiento de la beta. La app repite
+  `requestAuthorization` al arrancar y al llegar cada invitación, de modo que
+  si Apple empieza a permitirlo, se activa solo.
 
 ## Sincronización online: Cloudflare
 
@@ -52,7 +86,7 @@ Si Cloudflare publica un host distinto, actualizar `SofaRelayURL` en `Info.plist
 - Nunca guardar ni imprimir ese token en logs, documentación o Git.
 - No tratar un fallo temporal de red al pedir `/me` como una credencial inválida. Solo se debe borrar/reemplazar la clave ante una respuesta de autenticación inequívoca; de lo contrario macOS puede pedir repetidamente acceso al llavero y el usuario perdería su identidad social.
 
-**Notificaciones del sistema (banners):** verificado en macOS 27 — `UNUserNotificationCenter` devuelve `UNErrorDomain Code=1 "Notifications are not allowed"` y la app ni se registra en el centro de notificaciones. Causa: macOS solo permite banners a apps notarizadas (identidad de Apple Developer); Sofa es autofirmada, y CLAUDE.md exige mantener esa firma. `NSUserNotification` (API antigua) tampoco entrega en macOS 26+. La invitación llega igual **dentro de la app**: al recibir `party_invite`, `SocialService.handle` la añade, abre el panel (`.sofaShowPanel`), muestra `PartyInvitationCard` ("X invited you") y suena un aviso. Se mantiene la llamada a `requestAuthorization`: si algún día se notariza, los banners se activan solos sin tocar código.
+**Notificaciones del sistema (banners):** ver la sección «Firma y notarización» — incluso notarizada, la app no consigue banners en macOS 27 beta. La invitación llega igual **dentro de la app**: al recibir `party_invite`, `SocialService.handle` la añade, abre el panel (`.sofaShowPanel`), muestra `PartyInvitationCard` ("X invited you") y suena un aviso.
 
 ## Publicar una actualización que llegue desde la app
 
@@ -97,7 +131,7 @@ Flujo obligatorio:
 - Crea el tag `v<versión>`, sube una release draft, descarga de nuevo los artefactos y compara los bytes.
 - Solo entonces publica la release como `latest`.
 
-El actualizador descarga el ZIP, no el DMG. Antes de sustituir la app comprueba el bundle ID, la versión, la firma y que la requirement de firma coincida con la app instalada. Por eso nunca se debe subir una app firmada con otra identidad.
+El actualizador descarga el ZIP, no el DMG. Antes de sustituir la app comprueba el bundle ID, la versión, la firma y la requirement de firma según `Updater.isAcceptableRequirement` (igualdad, o el salto único autofirmada→Developer ID del equipo propio; ver «Firma y notarización»). Nunca subir una app firmada con una identidad fuera de esas dos.
 
 ## Comprobaciones rápidas
 
@@ -105,7 +139,9 @@ El actualizador descarga el ZIP, no el DMG. Antes de sustituir la app comprueba 
 ./build.sh
 lipo -archs dist/Sofa.app/Contents/MacOS/Sofa
 codesign --verify --deep --strict dist/Sofa.app
+./scripts/check-trust-rule.sh
 node --check BrowserExtension/content.js
+spctl -a -vv --type execute dist/Sofa.app   # "Notarized Developer ID" en releases
 ```
 
 El helper Theater está incluido dentro de `Sofa.app`; no es necesario enviar una extensión separada a los usuarios.

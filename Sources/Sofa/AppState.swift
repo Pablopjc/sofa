@@ -124,6 +124,11 @@ enum RoomTransport: Equatable {
 final class AppState: ObservableObject {
     static let shared = AppState()
 
+    /// First-run tour: shown once, re-openable from the ⋯ menu.
+    @Published var welcomeDone: Bool = UserDefaults.standard.bool(forKey: "SofaWelcomeDone") {
+        didSet { UserDefaults.standard.set(welcomeDone, forKey: "SofaWelcomeDone") }
+    }
+
     /// Your name, shown to friends in the room. Persisted across launches.
     @Published var displayName: String = UserDefaults.standard.string(forKey: "SofaDisplayName")
         ?? NSFullUserName().components(separatedBy: " ").first ?? "Me" {

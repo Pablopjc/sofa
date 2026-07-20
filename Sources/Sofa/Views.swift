@@ -49,7 +49,10 @@ struct ContentView: View {
                     .padding(.horizontal, 16).padding(.bottom, 8)
             }
             Group {
-                if state.inRoom {
+                if !state.welcomeDone && !state.inRoom {
+                    WelcomeView()
+                        .transition(.opacity)
+                } else if state.inRoom {
                     RoomView()
                         .transition(.opacity.combined(with: .move(edge: .trailing)))
                 } else {
@@ -58,6 +61,7 @@ struct ContentView: View {
                 }
             }
             .animation(.spring(duration: 0.35), value: state.inRoom)
+            .animation(.spring(duration: 0.35), value: state.welcomeDone)
         }
         // No minHeight: the panel measures this view and sizes itself to fit,
         // so there's never a slab of empty glass under the content.
@@ -107,6 +111,17 @@ struct TitleBar: View {
                 Text("Sofa \(Updater.shared.currentVersion)")
                 Button("Check for Updates…") { Updater.shared.checkForUpdates() }
                 Divider()
+                Button("Help & Website") {
+                    NSWorkspace.shared.open(URL(string: "https://github.com/Pablopjc/sofa#readme")!)
+                }
+                Button("Report a Problem") {
+                    NSWorkspace.shared.open(URL(string: "https://github.com/Pablopjc/sofa/issues")!)
+                }
+                Button("Welcome Tour") {
+                    UserDefaults.standard.set(false, forKey: "SofaWelcomeDone")
+                    AppState.shared.welcomeDone = false
+                }
+                Divider()
                 Button("Quit Sofa") { NSApp.terminate(nil) }
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -123,6 +138,72 @@ struct TitleBar: View {
 }
 
 // MARK: - Idle
+
+/// First-run tour: what Sofa does and which permissions it will ask for, so
+/// none of the system dialogs come as a surprise to a stranger.
+struct WelcomeView: View {
+    @ObservedObject var state = AppState.shared
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "sofa.fill")
+                .font(.system(size: 34, weight: .medium))
+                .foregroundStyle(Color.accentColor.gradient)
+            Text("Welcome to Sofa")
+                .font(.system(size: 16, weight: .semibold))
+            Text("Watch movies and shows with friends, perfectly in sync — each of you on your own Mac, with your own accounts.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            VStack(alignment: .leading, spacing: 10) {
+                WelcomeRow(icon: "play.circle.fill",
+                           title: "Works with what you already use",
+                           text: "QuickTime, VLC, Apple TV, and YouTube, Netflix or Prime Video in Safari and Chrome.")
+                WelcomeRow(icon: "link",
+                           title: "One link to watch together",
+                           text: "Start a party, send the invite link — friends click it and playback stays in sync, even in different countries.")
+                WelcomeRow(icon: "hand.raised.fill",
+                           title: "About the permission prompts",
+                           text: "macOS will ask you to allow Sofa to control your video player (that's how sync works) and, for Theater mode, to arrange windows. Sofa never sees or transmits your video or audio.")
+            }
+            .padding(14)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+
+            Button {
+                state.welcomeDone = true
+            } label: {
+                Text("Get Started")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 5)
+            }
+            .sofaProminentButton()
+            .controlSize(.large)
+        }
+        .padding(.horizontal, 18).padding(.bottom, 14).padding(.top, 4)
+    }
+}
+
+struct WelcomeRow: View {
+    let icon: String
+    let title: String
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 15))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 12.5, weight: .semibold))
+                Text(text).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
 
 struct IdleView: View {
     @ObservedObject var state = AppState.shared

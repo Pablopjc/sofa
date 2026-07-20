@@ -1,82 +1,54 @@
-# 🛋️ Sofa (native Swift version)
+# 🛋️ Sofa
 
-Native macOS rewrite of Sofa — watch movies and listen to music **together, in sync, from anywhere**. Menu bar app built with Swift, SwiftUI and AppKit. ~14 MB on disk (the Electron legacy version is ~239 MB).
+**Watch movies and shows with friends, perfectly in sync — each of you on your own Mac.**
 
-The Electron original lives in `../Sofa` and is installed as **Sofa Legacy.app** — same sync protocol, so a Swift Sofa and a Legacy Sofa can share a room.
+Sofa is a tiny macOS menu bar app for long-distance movie nights. One person starts a watch party and shares a link; when a friend clicks it, both players stay in lockstep: play, pause and skips mirror instantly, with automatic drift correction. Your video and audio never leave your Mac — only tiny "play/pause/position" messages do.
 
-## Features (same as Legacy)
+## Why Sofa
 
-- **Online watch parties**: both Macs connect out to an encrypted public WSS relay, so friends on different home networks can join through a `sofa://` invite link. Only tiny sync/presence messages cross the relay; video and call audio never do.
-- **Saved friends and direct invitations**: exchange a capability link once, then invite saved friends from inside a party. The device credential lives in macOS Keychain; invitations expire after 15 minutes and can be accepted from Sofa or a native notification.
-- **Local mode remains available**: the embedded WebSocket relay on port 7420 still powers Test Zone, same-Wi-Fi parties and old invite links.
-- **Syncs your real players**: QuickTime, VLC, Chrome/Safari (YouTube, Netflix via its internal player API, Disney+…), Apple Music, Spotify — via AppleScript polling, plus a built-in AVPlayer with drag & drop and a bundled test video.
-- Play/pause/seek mirroring with latency compensation and periodic drift correction.
-- Audio card: built-in movie volume, system volume, and an optional independent
-  FaceTime-call slider. FaceTime samples are attenuated in memory only and are
-  never saved or sent; macOS asks for System Audio Recording permission once.
-- Adaptive light/dark app icon (macOS 26+), template menu bar icon, popover-material panel.
+- **Works with what you already use.** No special player and no re-uploading files. Sofa syncs **QuickTime, VLC, the Apple TV app**, and **YouTube, Netflix, Prime Video, Disney+ and any HTML5 video** playing in Safari or Chrome. Each person uses their own account and their own copy.
+- **One link to watch together.** `sofa://` invite links carry the room and its secret — click and you're in. Works across different homes, networks and countries via an encrypted relay; same-Wi-Fi mode needs no internet relay at all.
+- **Saved friends.** Exchange a friend link once, and from then on invite each other from inside the app — the invitation pops up on the friend's Mac with one-click Join.
+- **Theater mode.** Blacks out the desktop, makes the movie as big as it fits, and keeps your FaceTime call beside it — no overlap. There's even an independent FaceTime volume slider so the call never drowns the movie.
+- **Light on your Mac.** Native Swift, ~15 MB on disk, 0% CPU when idle, universal binary for Apple Silicon and Intel.
 
-## Build
+## Install
+
+1. Download the latest **`Sofa-<version>.dmg`** from [Releases](https://github.com/Pablopjc/sofa/releases/latest).
+2. Open it and drag **Sofa** to **Applications**.
+3. Launch Sofa — it lives in your **menu bar** (🛋️ icon, no Dock icon).
+
+Updating later is built in: menu bar 🛋️ → ⋯ → **Check for Updates…**
+
+**Requirements:** macOS 14 Sonoma or newer, Apple Silicon or Intel.
+
+## First-time permissions (and why)
+
+Sofa asks only for what its features physically require, when you first use them:
+
+| Permission | Asked when | Why |
+|---|---|---|
+| **Automation** (control QuickTime, Safari, etc.) | First sync with that player | This *is* the sync mechanism — Sofa presses play/pause/seek in your player for you. |
+| **Allow JavaScript from Apple Events** (browser setting) | Syncing browser video | Lets Sofa read and control the web player in the active tab. One-time setup per browser. |
+| **Accessibility** | First use of Theater mode | Moving/resizing other apps' windows (your player, your call) requires it. |
+| **System Audio Recording** | First use of the FaceTime volume slider | The call's audio is attenuated in memory and played straight back out. It is never stored or transmitted. |
+
+Sofa never sees, records or transmits your video or call audio. See [PRIVACY.md](PRIVACY.md) for the full picture of what data moves where.
+
+## How syncing works (short version)
+
+- **Online parties:** both Macs open an outbound encrypted WebSocket to a relay (a Cloudflare Worker). The relay forwards small state messages (`play`, `pause`, `seek`, position ticks, presence) between room members. Rooms need a secret carried in the invite link; the relay enforces it. Rooms expire after 24 h.
+- **Local parties / Test Zone:** one Mac hosts a WebSocket server on port 7420; no internet needed.
+- Sofa watches your chosen player locally (AppleScript, ~1 s cadence) and applies friends' actions to it, with latency compensation.
+
+## Building from source
 
 ```bash
 ./build.sh          # → dist/Sofa.app (universal: arm64 + x86_64)
 ```
 
-## Installing and sharing
+Requires Swift 6+ (Xcode command line tools). The relay's source and test suite live in [`Relay/`](Relay/); maintainer docs are in [`CLAUDE.md`](CLAUDE.md).
 
-Send friends the single `Sofa-<version>.dmg` file. They open it, drag Sofa to
-Applications, then use right-click → Open the first time. The extra first-open
-step is required until Sofa is signed and notarized with an Apple Developer ID.
+## License
 
-The browser Theater helper is already embedded in Sofa; friends do not need the
-separate extension archive.
-
-## Releasing a new version
-
-Sofa's **Check for Updates…** (⋯ menu in the panel) reads the latest GitHub
-release of the repo named in `Info.plist` → `SofaUpdateRepo`.
-
-One-time setup:
-
-```bash
-gh auth login                      # sign in to GitHub
-gh repo create sofa --public --source=. --remote=origin --push
-```
-
-Once the source and `Info.plist` already contain the new version, publish it with:
-
-```bash
-./release.sh 0.1.30 "Lower background usage on Apple Silicon and Intel Macs"
-```
-
-The release script requires a clean `master` already pushed to GitHub. It builds
-and validates the universal app, tags that exact source commit, uploads the DMG
-and updater ZIP as a draft, downloads both again for a byte-for-byte check, and
-only then makes the release public. Everyone's **Check for Updates…** then
-offers the new version.
-
-The repo must be **public** — a private one would need an API token baked into
-the app for the update check to work.
-
-Requires Xcode command line tools (Swift 6+). If Xcode 26+ is installed, the build embeds the adaptive light/dark icon via `actool`; otherwise it falls back to the classic `.icns`.
-
-## Project layout
-
-- `Sources/Sofa/main.swift` — entry point
-- `Sources/Sofa/App.swift` — status item, panel (NSVisualEffectView popover), sofa:// handling
-- `Sources/Sofa/AppState.swift` — central observable state + room lifecycle
-- `Sources/Sofa/SyncEngine.swift` — public WSS + local WebSocket clients, embedded LAN relay and JSON protocol
-- `Sources/Sofa/RoomTarget.swift` — strict parser for versioned online and legacy LAN invitations
-- `Sources/Sofa/PlayerBridge.swift` — AppleScript bridge to external players
-- `Sources/Sofa/CallAudioVolume.swift` — local Core Audio FaceTime attenuator
-- `Sources/Sofa/SocialService.swift` — Keychain identity, saved friends, invitations and notifications
-- `Sources/Sofa/BuiltinPlayer.swift` — AVPlayer with sync events
-- `Sources/Sofa/Views.swift` — SwiftUI UI (idle + room)
-- `Resources/` — demo video, icns, Icon Composer bundle
-- `Relay/` — Cloudflare Worker + Durable Object used by online rooms
-
-## Gotchas learned the hard way
-
-- `NWConnection` + WebSocket **requires a URL endpoint** (`.url(ws://…)`); a host:port endpoint aborts with POSIX 53.
-- Use `application(_:open:)` for URL schemes — manual `NSAppleEventManager` registration gets overwritten by AppKit.
-- If multiple app copies register the `sofa:` scheme, macOS may route links to whichever is running — keep dev builds unregistered (`lsregister -u`).
+[MIT](LICENSE).
