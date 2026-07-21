@@ -254,12 +254,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func resizePanelToFit() {
         let probe = NSHostingView(rootView: ContentView())
         probe.layoutSubtreeIfNeeded()
-        let ideal = probe.fittingSize.height
+        // Round to whole pixels: text metrics jitter by fractions between
+        // measurement passes, and the live player time re-measures every
+        // second — sub-pixel deltas must never trigger a resize.
+        let ideal = (probe.fittingSize.height).rounded()
         guard ideal > 100 else { return } // sanity: never collapse the panel
 
         let maxHeight = (NSScreen.main?.visibleFrame.height ?? 800) - 24
         let height = min(ideal, maxHeight)
-        guard abs(panel.frame.height - height) > 0.5 else { return }
+        // A generous threshold: only real content changes (a card appearing)
+        // move the panel. Anything under 3pt is measurement noise, and
+        // animating it every second reads as the panel "vibrating".
+        guard abs(panel.frame.height - height) > 3 else { return }
 
         // Keep the top edge pinned: the panel hangs from the menu bar.
         var frame = panel.frame
