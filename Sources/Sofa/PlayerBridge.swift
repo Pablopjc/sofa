@@ -93,6 +93,7 @@ final class PlayerBridge {
         "var h=location.hostname.toLowerCase(),x=null;" +
         "if(h==='youtube.com'||h.endsWith('.youtube.com'))x=document.querySelector('#movie_player');" +
         "else if(h==='netflix.com'||h.endsWith('.netflix.com'))x=document.querySelector('.watch-video--player-view,[data-uia=watch-video]');" +
+        "else if(h==='disneyplus.com'||h.endsWith('.disneyplus.com'))x=document.querySelector('#hudson-wrapper');" +
         "return !!x&&(f===document.documentElement||f===document.body||f===x||f.contains(x)||x.contains(f))}" +
         "if(!v&&!p)return 'none';var data={time:tm,playing:v?!v.paused:false,poster:poster,title:t,url:mediaURL,fullscreen:fsok()};" +
         "return 'SOFAJSON|'+encodeURIComponent(JSON.stringify(data))})()"
@@ -143,11 +144,11 @@ final class PlayerBridge {
         let reserve = reserveCallColumn ? "true" : "false"
         return
             "(function(){var d=document.documentElement;if(!d)return 'SOFA_ERR|no-document';" +
-            "if(d.getAttribute('data-sofa-theater-helper')!=='0.1.30-efficiency'){\(theaterHelperBootstrapJS)}" +
+            "if(d.getAttribute('data-sofa-theater-helper')!=='0.1.57-disney'){\(theaterHelperBootstrapJS)}" +
             "var w=\(reserve)?'auto':'0';" +
             "d.setAttribute('data-sofa-theater-command','\(command)|'+w);" +
             "d.removeAttribute('data-sofa-theater-status');" +
-            "document.dispatchEvent(new Event('sofa-theater-command-0.1.30-efficiency'));" +
+            "document.dispatchEvent(new Event('sofa-theater-command-0.1.57-disney'));" +
             "return d.getAttribute('data-sofa-theater-status')||'SOFA_ERR|helper-no-response'})()"
     }
 
@@ -168,6 +169,7 @@ final class PlayerBridge {
         "if(!f)return 'SOFA_FALSE';var h=location.hostname.toLowerCase(),t=null;" +
         "if(h==='youtube.com'||h.endsWith('.youtube.com'))t=document.querySelector('#movie_player');" +
         "else if(h==='netflix.com'||h.endsWith('.netflix.com'))t=document.querySelector('.watch-video--player-view,[data-uia=watch-video]');" +
+        "else if(h==='disneyplus.com'||h.endsWith('.disneyplus.com'))t=document.querySelector('#hudson-wrapper');" +
         "if(!t)return 'SOFA_FALSE';return (f===document.documentElement||f===document.body||f===t||f.contains(t)||t.contains(f))?'SOFA_TRUE':'SOFA_FALSE'})()"
 
     /// Captures Chrome's stable tab id with the result. Safari does not expose a

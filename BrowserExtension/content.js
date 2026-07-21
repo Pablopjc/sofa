@@ -1,14 +1,27 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.30-efficiency";
-  const EVENT_NAME = "sofa-theater-command-0.1.30-efficiency";
+  const VERSION = "0.1.57-disney";
+  const EVENT_NAME = "sofa-theater-command-0.1.57-disney";
   const READY_ATTR = "data-sofa-theater-helper";
   const COMMAND_ATTR = "data-sofa-theater-command";
   const STATUS_ATTR = "data-sofa-theater-status";
   const ACTIVE_ATTR = "data-sofa-theater-active";
   const NETFLIX_ATTR = "data-sofa-theater-netflix";
   const YOUTUBE_ATTR = "data-sofa-theater-youtube";
+  const DISNEY_ATTR = "data-sofa-theater-disney";
+
+  // The per-site marker attribute Theater puts on the element it width-sizes.
+  function markerFor(kind) {
+    if (kind === "netflix") return NETFLIX_ATTR;
+    if (kind === "disney") return DISNEY_ATTR;
+    return YOUTUBE_ATTR;
+  }
+  // Disney mirrors Netflix's behaviour: a naturally-filling player that only
+  // needs a width seam, with no fixed-fill scaffolding or synthetic resize.
+  function fillsNatively(kind) {
+    return kind === "netflix" || kind === "disney";
+  }
   const RESIZE_CURSOR_ATTR = "data-sofa-theater-resize-cursor";
   const STYLE_ID = "sofa-theater-style";
   const RESIZE_HIT_RADIUS = 8;
@@ -85,6 +98,7 @@
     const host = location.hostname.toLowerCase();
     if (host === "netflix.com" || host.endsWith(".netflix.com")) return "netflix";
     if (host === "youtube.com" || host.endsWith(".youtube.com")) return "youtube";
+    if (host === "disneyplus.com" || host.endsWith(".disneyplus.com")) return "disney";
     return null;
   }
 
@@ -94,6 +108,25 @@
         document.querySelector('[data-uia="watch-video"]');
     }
     if (kind === "youtube") return document.querySelector("#movie_player");
+    if (kind === "disney") {
+      // A width seam can NEVER shrink the fullscreen top-layer element itself —
+      // the UA `:fullscreen { width:100% !important }` rule outranks author
+      // CSS. So size a normal-flow DESCENDANT of the promoted element (the
+      // outermost wrapper that still sits inside it and holds the <video>).
+      const wrap = document.querySelector("#hudson-wrapper");
+      const fs = document.fullscreenElement || document.webkitFullscreenElement;
+      const scope = (fs && wrap && (fs === wrap || wrap.contains(fs) || fs.contains(wrap)))
+        ? fs
+        : (fs || wrap);
+      if (!scope) return null;
+      const video = scope.querySelector && scope.querySelector("video");
+      if (video && video !== scope) {
+        let node = video.parentElement, child = null;
+        while (node && node !== scope) { child = node; node = node.parentElement; }
+        if (child) return child;
+      }
+      return scope; // best effort (may be the top layer; a call column may not fit)
+    }
     return null;
   }
 
@@ -132,9 +165,9 @@
   }
 
   function videoWidthCSS(kind) {
-    if (!hasReservation()) return kind === "netflix" ? "100%" : "100vw";
+    if (!hasReservation()) return fillsNatively(kind) ? "100%" : "100vw";
     const reservation = `${effectiveReservedWidth()}px`;
-    if (kind === "netflix") {
+    if (fillsNatively(kind)) {
       return `calc(100% - ${reservation})`;
     }
     return `calc(100vw - ${reservation})`;
@@ -154,11 +187,13 @@
         cursor: col-resize !important;
       }
       html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] #movie_player[${YOUTUBE_ATTR}],
-      html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${NETFLIX_ATTR}] {
+      html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${NETFLIX_ATTR}],
+      html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${DISNEY_ATTR}] {
         overflow: visible !important;
       }
       html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] #movie_player[${YOUTUBE_ATTR}]::after,
-      html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${NETFLIX_ATTR}]::after {
+      html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${NETFLIX_ATTR}]::after,
+      html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${DISNEY_ATTR}]::after {
         content: "" !important;
         position: absolute !important;
         right: -10px !important;
@@ -190,6 +225,26 @@
         [${NETFLIX_ATTR}] {
           left: 0 !important;
           width: ${width} !important;
+        }
+      `;
+    }
+
+    if (kind === "disney") {
+      // Same minimal seam as Netflix: Disney+'s player fills the fullscreen
+      // viewport on its own, so with no call we mutate nothing. With a call,
+      // constrain the promoted container's width and let the <video>
+      // (object-fit: contain) letterbox into the reduced area — a belt-and-
+      // suspenders cap on the video guards against it keeping its old width.
+      if (!hasReservation()) return "";
+      return `${interactionCSS}
+        [${DISNEY_ATTR}] {
+          left: 0 !important;
+          width: ${width} !important;
+        }
+        [${DISNEY_ATTR}] video, [${DISNEY_ATTR}] .btm-media-client-element {
+          width: 100% !important;
+          height: 100% !important;
+          object-fit: contain !important;
         }
       `;
     }
@@ -261,7 +316,7 @@
   function setReservedWidthCSS(width) {
     const rule = ensureSizingRule();
     if (!rule?.style || !activeKind) return false;
-    const base = activeKind === "netflix" ? "100%" : "100vw";
+    const base = fillsNatively(activeKind) ? "100%" : "100vw";
     rule.style.setProperty("width", `calc(${base} - ${width}px)`, "important");
     return true;
   }
@@ -473,6 +528,9 @@
     document.querySelectorAll(`[${YOUTUBE_ATTR}]`).forEach((element) => {
       element.removeAttribute(YOUTUBE_ATTR);
     });
+    document.querySelectorAll(`[${DISNEY_ATTR}]`).forEach((element) => {
+      element.removeAttribute(DISNEY_ATTR);
+    });
     html.removeAttribute(ACTIVE_ATTR);
     html.removeAttribute(RESIZE_CURSOR_ATTR);
     activeTarget = null;
@@ -536,10 +594,11 @@
     }
 
     html.setAttribute(ACTIVE_ATTR, kind);
-    // Do not mutate Netflix's protected video/canvas/player subtree or
-    // synthesize a resize; Widevine remains entirely under Netflix's control.
-    if (kind !== "netflix" || hasReservation()) {
-      target.setAttribute(kind === "netflix" ? NETFLIX_ATTR : YOUTUBE_ATTR, "1");
+    // Do not mutate a natively-filling player's protected subtree when there's
+    // no call to make room for; Widevine stays entirely under the site's
+    // control. Only YouTube (fixed-fill) needs a synthetic resize.
+    if (!fillsNatively(kind) || hasReservation()) {
+      target.setAttribute(markerFor(kind), "1");
       if (kind === "youtube") {
         try { window.dispatchEvent(new Event("resize")); } catch (_) {}
       }
@@ -588,15 +647,10 @@
     if (!target) return;
     if (target !== activeTarget) {
       cancelResizeInteraction();
-      activeTarget?.removeAttribute(
-        activeKind === "netflix" ? NETFLIX_ATTR : YOUTUBE_ATTR
-      );
+      activeTarget?.removeAttribute(markerFor(activeKind));
       activeTarget = target;
-      if (activeKind !== "netflix" || hasReservation()) {
-        target.setAttribute(
-          activeKind === "netflix" ? NETFLIX_ATTR : YOUTUBE_ATTR,
-          "1"
-        );
+      if (!fillsNatively(activeKind) || hasReservation()) {
+        target.setAttribute(markerFor(activeKind), "1");
         if (activeKind === "youtube") {
           try { window.dispatchEvent(new Event("resize")); } catch (_) {}
         }

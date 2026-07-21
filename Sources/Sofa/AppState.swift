@@ -1088,7 +1088,7 @@ final class AppState: ObservableObject {
                             guard let self, self.theaterRequestID == requestID else { return }
                             if !cinemaReady {
                                 self.stopTheater()
-                                self.showToast("Sofa couldn't prepare this YouTube or Netflix player. Keep the video tab visible and try again.")
+                                self.showToast("Sofa couldn't prepare this video player. Keep the video tab visible and try again.")
                                 return
                             }
                             // Confirm F is still active after the CSS landed. A
