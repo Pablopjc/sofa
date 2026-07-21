@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.57-disney";
-  const EVENT_NAME = "sofa-theater-command-0.1.57-disney";
+  const VERSION = "0.1.59-disney2";
+  const EVENT_NAME = "sofa-theater-command-0.1.59-disney2";
   const READY_ATTR = "data-sofa-theater-helper";
   const COMMAND_ATTR = "data-sofa-theater-command";
   const STATUS_ATTR = "data-sofa-theater-status";
@@ -111,21 +111,24 @@
     if (kind === "disney") {
       // A width seam can NEVER shrink the fullscreen top-layer element itself —
       // the UA `:fullscreen { width:100% !important }` rule outranks author
-      // CSS. So size a normal-flow DESCENDANT of the promoted element (the
-      // outermost wrapper that still sits inside it and holds the <video>).
-      const wrap = document.querySelector("#hudson-wrapper");
+      // CSS. So size a normal-flow DESCENDANT of the promoted element. On the
+      // 2026 player (/play/ routes) Disney fullscreens #app_body_content and
+      // the old #hudson-wrapper id is gone; these class anchors survive.
+      const wrap = document.querySelector(
+        "#hudson-wrapper, .video_view--theater, .hudson-container, .player-container-root, .btm-media-player"
+      );
       const fs = document.fullscreenElement || document.webkitFullscreenElement;
-      const scope = (fs && wrap && (fs === wrap || wrap.contains(fs) || fs.contains(wrap)))
-        ? fs
-        : (fs || wrap);
-      if (!scope) return null;
-      const video = scope.querySelector && scope.querySelector("video");
-      if (video && video !== scope) {
+      if (!fs) return wrap; // Theater's fullscreen gate rejects this anyway
+      if (wrap && fs !== wrap && fs.contains(wrap)) return wrap;
+      // The wrapper IS (or contains) the promoted element: size the outermost
+      // video-bearing descendant of the top-layer element instead.
+      const video = fs.querySelector && fs.querySelector("video");
+      if (video && video !== fs) {
         let node = video.parentElement, child = null;
-        while (node && node !== scope) { child = node; node = node.parentElement; }
+        while (node && node !== fs) { child = node; node = node.parentElement; }
         if (child) return child;
       }
-      return scope; // best effort (may be the top layer; a call column may not fit)
+      return wrap;
     }
     return null;
   }
