@@ -55,8 +55,7 @@ Todo en `Sources/Sofa/` (~7 200 líneas). Por orden de importancia:
 | `Updater.swift` | 292 | Check for Updates contra GitHub Releases + sustitución segura del bundle. |
 | `FakeCall.swift` | 153 | Ventana de videollamada falsa para probar Theater sin llamar a nadie. |
 | `TestFriend.swift` | 149 | Amigo simulado: **peer real** que se une a la sala real por WebSocket. |
-| `BuiltinPlayer.swift` | 145 | Reproductor propio (AVPlayer) con sincronización. |
-| `RoomTarget.swift` | 119 | Parser de invitaciones (`sofa://join/v1/<room>/<secret>` y LAN). |
+| `RoomTarget.swift` | 119 | Parser de invitaciones (`sofa://join/v1/<room>/<secret>`, https `/j/`, código suelto y LAN). |
 | `MediaSourceDetector.swift` | 42 | Qué reproductores están abiertos (solo `NSWorkspace`, sin permisos). |
 | `SystemVolume.swift` | 39 | Volumen del sistema vía `osascript`, con anti-rebote. |
 

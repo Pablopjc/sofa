@@ -897,11 +897,7 @@ final class SyncEngine {
                 let sameContent = msg.url == nil || state.nowPlayingURL == nil ||
                     msg.url == state.nowPlayingURL
                 guard sameContent else { break }
-                if state.playerChoice != .builtin {
-                    PlayerBridge.shared.applyRemote(msg)
-                } else {
-                    state.builtin.applyRemote(msg)
-                }
+                PlayerBridge.shared.applyRemote(msg)
             default:
                 break
             }

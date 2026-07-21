@@ -37,8 +37,49 @@ final class SocialService: ObservableObject {
     /// Friends already invited to the current party (shown as ✓ chips).
     @Published private(set) var invitedFriendIDs: Set<String> = []
 
+    /// Dev-only fake friends (⋯ menu) so the whole invite → notification →
+    /// join loop can be exercised on one Mac. Ids are prefixed "sim-".
+    @Published private(set) var simulatedFriends: [SavedSofaFriend] = []
+    /// Invitation id → the simulated friend it stands in for.
+    private var simulatedInviteFriends: [String: SavedSofaFriend] = [:]
+
+    /// Real saved friends plus any simulated ones, for every invite surface.
+    var invitableFriends: [SavedSofaFriend] { friends + simulatedFriends }
+
     func clearInvitedMarks() {
         invitedFriendIDs = []
+    }
+
+    private static let simulatedNamePool =
+        ["Ana", "Luis", "Sofía", "Marco", "Elena", "Diego", "Carmen", "Pau"]
+
+    func addSimulatedFriend() {
+        let used = Set(invitableFriends.map(\.name))
+        let name = Self.simulatedNamePool.first { !used.contains($0) }
+            ?? "Friend \(simulatedFriends.count + 1)"
+        simulatedFriends.append(
+            SavedSofaFriend(id: "sim-\(UUID().uuidString.prefix(8))", name: name, online: true)
+        )
+        AppState.shared.showToast("Added simulated friend \(name)")
+    }
+
+    func removeSimulatedFriends() {
+        guard !simulatedFriends.isEmpty else { return }
+        simulatedFriends = []
+        clearSimulatedInvites()
+        AppState.shared.showToast("Removed simulated friends")
+    }
+
+    /// Drops any pending/shown simulated invitations and their marks, so a
+    /// stale sim card can never outlive its party or a removed friend.
+    func clearSimulatedInvites() {
+        guard !simulatedInviteFriends.isEmpty else { return }
+        let simIDs = Set(simulatedInviteFriends.keys)
+        simulatedInviteFriends = [:]
+        invitations.removeAll { simIDs.contains($0.id) }
+        invitedFriendIDs.subtract(
+            Set(simulatedFriends.map(\.id))
+        )
     }
 
     fileprivate struct Credential: Codable { let id: String; let token: String }
@@ -125,7 +166,13 @@ final class SocialService: ObservableObject {
         let state = AppState.shared
         guard state.isHosting, state.roomIsOnline,
               !state.inviteCode.isEmpty, let secret = state.sync.roomToken else {
-            state.showToast("Start an online party before inviting a saved friend.")
+            state.showToast("Start an online party before inviting a friend.")
+            return
+        }
+        // A simulated friend has no real device — play out the round trip
+        // locally so the notification and join can be experienced on one Mac.
+        if friend.id.hasPrefix("sim-") {
+            simulateInvitation(to: friend)
             return
         }
         Task {
@@ -154,7 +201,46 @@ final class SocialService: ObservableObject {
         }
     }
 
+    /// Fakes the friend's side of an invitation: after a short beat their Sofa
+    /// "receives" it (banner + in-app card). Accepting it drops them into the
+    /// party, so the sender sees the avatar arrive — all on one Mac.
+    private func simulateInvitation(to friend: SavedSofaFriend) {
+        let state = AppState.shared
+        invitedFriendIDs.insert(friend.id)
+        state.showToast("Invitation sent to \(friend.name)")
+        let invite = SofaPartyInvitation(
+            id: "sim-invite-\(UUID().uuidString.prefix(8))",
+            fromID: "sim-self",
+            fromName: state.displayName,
+            roomID: state.inviteCode,
+            secret: state.sync.roomToken ?? "",
+            title: state.nowPlaying,
+            createdAt: Date().timeIntervalSince1970 * 1000,
+            expiresAt: (Date().timeIntervalSince1970 + 3600) * 1000
+        )
+        simulatedInviteFriends[invite.id] = friend
+        Task {
+            try? await Task.sleep(for: .milliseconds(1200))
+            // The party may have ended (or the friend been removed) mid-beat.
+            guard state.isHosting, simulatedInviteFriends[invite.id] != nil else { return }
+            if !invitations.contains(where: { $0.id == invite.id }) {
+                invitations.append(invite)
+            }
+            if !modernNotificationsAllowed { requestBannerAuthorization() }
+            postNotification(for: invite)
+            NotificationCenter.default.post(name: .sofaShowPanel, object: nil)
+            NSSound(named: "Ping")?.play()
+        }
+    }
+
     func acceptInvitation(id: String) {
+        // A simulated invite: accepting it makes the fake friend join the room.
+        if let friend = simulatedInviteFriends[id] {
+            simulatedInviteFriends[id] = nil
+            dismissInvitation(id: id)
+            AppState.shared.simulateFriendJoined(friend)
+            return
+        }
         guard let invite = invitations.first(where: { $0.id == id }) else { return }
         let state = AppState.shared
         guard !state.inRoom, !state.hosting, !state.joining else {
@@ -282,7 +368,7 @@ final class SocialService: ObservableObject {
             if !modernNotificationsAllowed { requestBannerAuthorization() }
             postNotification(for: invite)
             NotificationCenter.default.post(name: .sofaShowPanel, object: nil)
-            AppState.shared.showToast("\(invite.fromName) invited you to watch together")
+            AppState.shared.showToast("\(invite.fromName) wants to watch with you")
             // A banner needs a notarized app; until then, a sound makes the
             // panel-opening invitation impossible to miss.
             if isNew { NSSound(named: "Ping")?.play() }
@@ -342,9 +428,13 @@ final class SocialService: ObservableObject {
 
     private func postNotification(for invite: SofaPartyInvitation) {
         let content = UNMutableNotificationContent()
-        content.title = "\(invite.fromName) invited you to watch together"
-        content.body = invite.title.map { "Watch “\($0)” together?" }
-            ?? "Open Sofa to join the party."
+        // "Watch “Interstellar” with Pablo?" — name the thing and the person.
+        if let title = invite.title, !title.isEmpty {
+            content.title = "Watch “\(title)” with \(invite.fromName)?"
+        } else {
+            content.title = "Watch with \(invite.fromName)?"
+        }
+        content.body = "Tap Join and Sofa drops you into the party, in sync."
         content.sound = .default
         content.categoryIdentifier = Self.notificationCategory
         content.userInfo = ["inviteID": invite.id]

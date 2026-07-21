@@ -10,7 +10,7 @@ extension Notification.Name {
 
 /// Which player Sofa is syncing.
 enum PlayerChoice: String, CaseIterable, Identifiable {
-    case quicktime, vlc, appleTV, chrome, safari, music, spotify, builtin
+    case quicktime, vlc, appleTV, chrome, safari, music, spotify
     var id: String { rawValue }
 
     var label: String {
@@ -22,7 +22,6 @@ enum PlayerChoice: String, CaseIterable, Identifiable {
         case .safari: return "Safari — YouTube, Netflix, Prime Video…"
         case .music: return "Apple Music"
         case .spotify: return "Spotify"
-        case .builtin: return "Sofa’s built-in player"
         }
     }
 
@@ -35,7 +34,6 @@ enum PlayerChoice: String, CaseIterable, Identifiable {
         case .safari: return "Keep the video tab in front. One-time setup: Develop → Allow JavaScript from Apple Events."
         case .music: return "Play your music as usual — playback stays in sync."
         case .spotify: return "Play your music as usual — playback stays in sync."
-        case .builtin: return "Open the same file on both Macs. Playback stays in sync."
         }
     }
 
@@ -49,7 +47,6 @@ enum PlayerChoice: String, CaseIterable, Identifiable {
         case .safari: return "Safari"
         case .music: return "Apple Music"
         case .spotify: return "Spotify"
-        case .builtin: return "Sofa’s built-in player"
         }
     }
 
@@ -63,11 +60,10 @@ enum PlayerChoice: String, CaseIterable, Identifiable {
         case .safari: return "com.apple.Safari"
         case .music: return "com.apple.Music"
         case .spotify: return "com.spotify.client"
-        case .builtin: return nil
         }
     }
 
-    /// The real app icon (for the source list), or nil for the built-in player.
+    /// The real app icon, for the source list.
     private static let appIconCache = NSCache<NSString, NSImage>()
 
     @MainActor var appIcon: NSImage? {
@@ -80,7 +76,7 @@ enum PlayerChoice: String, CaseIterable, Identifiable {
         return image
     }
 
-    /// Players Sofa can drive (excludes the built-in player).
+    /// Every supported player is an external app Sofa drives via AppleScript.
     static var externalPlayers: [PlayerChoice] {
         [.quicktime, .vlc, .appleTV, .chrome, .safari, .music, .spotify]
     }
@@ -89,7 +85,7 @@ enum PlayerChoice: String, CaseIterable, Identifiable {
     var supportsTheater: Bool {
         switch self {
         case .quicktime, .vlc, .appleTV, .chrome, .safari: return true
-        case .music, .spotify, .builtin: return false
+        case .music, .spotify: return false
         }
     }
 
@@ -98,7 +94,7 @@ enum PlayerChoice: String, CaseIterable, Identifiable {
     /// AppleScript's `tell application` launches a target that is not running.
     /// Every background probe and remote command must check this first.
     var isRunning: Bool {
-        guard let bundleID else { return self == .builtin }
+        guard let bundleID else { return false }
         return !NSRunningApplication.runningApplications(
             withBundleIdentifier: bundleID
         ).isEmpty
@@ -195,7 +191,6 @@ final class AppState: ObservableObject {
 
     // Audio
     @Published var systemVolume: Double = 50
-    @Published var movieVolume: Double = 100
     @Published var callVolume: Double = UserDefaults.standard.object(
         forKey: "SofaFaceTimeVolume"
     ) as? Double ?? 100
@@ -237,12 +232,10 @@ final class AppState: ObservableObject {
     var mediaActive = false
 
     let sync = SyncEngine()
-    let builtin = BuiltinPlayer()
     let testFriend = TestFriend()
 
     private init() {
         sync.state = self
-        builtin.state = self
         SystemVolume.get { [weak self] v in
             DispatchQueue.main.async { self?.systemVolume = Double(v) }
         }
@@ -268,10 +261,22 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// A simulated friend accepted their invite: show them in the party roster
+    /// (no real sync — this is the ⋯ menu's experimentation aid).
+    func simulateFriendJoined(_ friend: SavedSofaFriend) {
+        guard inRoom else { return }
+        _ = upsertFriend(id: friend.id, name: friend.name)
+    }
+
     func pruneFriends(olderThan seconds: TimeInterval) {
-        let dropped = friends.filter { Date().timeIntervalSince($0.lastSeen) > seconds }
+        // Simulated friends (⋯ tool) send no heartbeats — never reap them, or
+        // the demo self-destructs with a false "lost connection" + auto-pause.
+        func isStale(_ f: Friend) -> Bool {
+            !f.id.hasPrefix("sim-") && Date().timeIntervalSince(f.lastSeen) > seconds
+        }
+        let dropped = friends.filter(isStale)
         guard !dropped.isEmpty else { return }
-        friends.removeAll { Date().timeIntervalSince($0.lastSeen) > seconds }
+        friends.removeAll(where: isStale)
         // A pruned friend vanished mid-party (network drop, sleep) — unlike a
         // clean "bye". Stop the movie so nobody silently runs ahead.
         if autoPauseIfPlaying() {
@@ -286,11 +291,6 @@ final class AppState: ObservableObject {
     @discardableResult
     func autoPauseIfPlaying() -> Bool {
         guard autoPauseEnabled, inRoom, !isTestMode else { return false }
-        if playerChoice == .builtin {
-            guard builtin.player.rate > 0 else { return false }
-            builtin.player.pause()
-            return true
-        }
         guard case .playing(_, true) = extLive else { return false }
         PlayerBridge.shared.pauseLocally()
         return true
@@ -554,10 +554,10 @@ final class AppState: ObservableObject {
                 self.disconnected = false
                 self.statusLabel = "Test mode"
                 self.startDetecting()
-                // Prefer a player you already have open; otherwise use Sofa's own.
-                self.playerChoice = self.detectedSources.first ?? .builtin
+                // Drive whatever player is already open; if none, the room UI
+                // guides you to open one (QuickTime, Safari…).
+                self.playerChoice = self.detectedSources.first ?? .quicktime
                 self.applyPlayerChoice()
-                if self.playerChoice == .builtin { self.builtin.loadDemo() }
                 // The fake friend starts only after NWListener reached .ready
                 // and Sofa's own client authenticated successfully.
                 self.testFriend.join(token: self.sync.roomToken)
@@ -572,9 +572,9 @@ final class AppState: ObservableObject {
         if theaterActive || theaterTransitioning { stopTheater() }
         FakeCall.shared.hide()
         testFriend.leave()
+        SocialService.shared.clearSimulatedInvites()
         sync.stop()
         PlayerBridge.shared.stop()
-        builtin.reset()
         stopDetecting()
         inRoom = false
         isHosting = false
@@ -734,9 +734,7 @@ final class AppState: ObservableObject {
     private func saveSessionSnapshot() {
         guard inRoom, !isTestMode, let title = nowPlaying else { return }
         let time: Double
-        if playerChoice == .builtin {
-            time = builtin.player.currentTime().seconds
-        } else if case .playing(let t, _) = extLive {
+        if case .playing(let t, _) = extLive {
             time = t
         } else {
             time = friendPlaybackTime ?? 0
@@ -774,11 +772,7 @@ final class AppState: ObservableObject {
         guard let saved = resumeCandidate else { return }
         resumeDismissed = true
         let message = SyncMessage(type: "seek", time: saved.time, playing: false)
-        if playerChoice == .builtin {
-            builtin.applyRemote(message)
-        } else {
-            PlayerBridge.shared.applyRemote(message)
-        }
+        PlayerBridge.shared.applyRemote(message)
         sync.send(message)
         showToast("Resumed at \(PlayerCard.fmt(saved.time)) — your friend jumps there too")
     }
@@ -787,11 +781,7 @@ final class AppState: ObservableObject {
     func matchFriendTime() {
         guard let target = estimatedFriendPlaybackTime else { return }
         let message = SyncMessage(type: "seek", time: target, playing: friendIsPlaying ?? true)
-        if playerChoice == .builtin {
-            builtin.applyRemote(message)
-        } else {
-            PlayerBridge.shared.applyRemote(message)
-        }
+        PlayerBridge.shared.applyRemote(message)
         showToast("Matched your friend’s position")
     }
 
@@ -1115,17 +1105,12 @@ final class AppState: ObservableObject {
         theaterAvailabilityProbeID = nil
         theaterAvailabilityChecking = false
         browserPageFullscreenReady = false
-        if playerChoice == .builtin {
-            PlayerBridge.shared.stop()
-        } else {
-            builtin.pauseAndUnload()
-            extLive = .searching
-            nowPlaying = nil
-            nowPlayingPoster = nil
-            nowPlayingURL = nil
-            mediaActive = true
-            PlayerBridge.shared.start(player: playerChoice)
-        }
+        extLive = .searching
+        nowPlaying = nil
+        nowPlayingPoster = nil
+        nowPlayingURL = nil
+        mediaActive = true
+        PlayerBridge.shared.start(player: playerChoice)
         refreshTheaterAvailability()
     }
 }

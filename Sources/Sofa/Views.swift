@@ -1,4 +1,3 @@
-import AVKit
 import AppKit
 import ImageIO
 import SwiftUI
@@ -128,6 +127,7 @@ struct ContentView: View {
 
 struct TitleBar: View {
     @ObservedObject var state = AppState.shared
+    @ObservedObject var social = SocialService.shared
 
     var body: some View {
         HStack(spacing: 8) {
@@ -187,6 +187,11 @@ struct TitleBar: View {
                 Divider()
                 Button("Try it solo — Test Zone") { state.enterTestZone() }
                     .disabled(state.inRoom || state.hosting || state.joining)
+                Menu("Simulated friends") {
+                    Button("Add a simulated friend") { social.addSimulatedFriend() }
+                    Button("Remove simulated friends") { social.removeSimulatedFriends() }
+                        .disabled(social.simulatedFriends.isEmpty)
+                }
                 Button("Quit Sofa") { NSApp.terminate(nil) }
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -442,7 +447,6 @@ struct AvatarView: View {
 
 struct RoomView: View {
     @ObservedObject var state = AppState.shared
-    @ObservedObject var builtin = AppState.shared.builtin
 
     var body: some View {
         // A plain stack rather than a ScrollView: the panel measures this and
@@ -458,9 +462,6 @@ struct RoomView: View {
                 TestFriendCard()
             }
             PlayerCard()
-            if state.playerChoice == .builtin {
-                BuiltinStage()
-            }
             LayoutCard()
             AudioCard()
 
@@ -527,11 +528,9 @@ struct InviteCard: View {
     @ObservedObject var state = AppState.shared
     @ObservedObject var social = SocialService.shared
 
-    private var roomCode: String { state.inviteCode }
-
     /// Online first, then by name, so the friend most likely to answer is first.
     private var sortedFriends: [SavedSofaFriend] {
-        social.friends.sorted {
+        social.invitableFriends.sorted {
             $0.online != $1.online ? $0.online : $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }
@@ -605,33 +604,17 @@ struct InviteCard: View {
         }
         .animation(.easeInOut(duration: 0.2), value: state.inviteLinkJustCopied)
 
-        // Coach + reassurance, exactly where a first-timer needs it.
+        // Coach, exactly where a first-timer needs it.
         Label("Send the link in WhatsApp, Messages, anywhere — your friend just taps it to join.",
               systemImage: "link")
             .font(.system(size: 10.5)).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-        Text("Your friend doesn't need Sofa yet — the link installs it free, then drops them into your party.")
-            .font(.system(size: 10.5)).foregroundStyle(.tertiary)
-            .fixedSize(horizontal: false, vertical: true)
-
-        // Demoted room-code reference: a name, not the thing you send.
-        HStack(spacing: 5) {
-            Text("Room")
-                .font(.system(size: 10)).foregroundStyle(.tertiary)
-            Text(roomCode)
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.secondary)
-            if let expiry = state.roomExpiresAt {
-                Text("· \(expiryText(expiry))")
-                    .font(.system(size: 10)).foregroundStyle(.tertiary)
-            }
-        }
 
         savedFriendsSection
     }
 
     @ViewBuilder private var savedFriendsSection: some View {
-        if !social.friends.isEmpty {
+        if !social.invitableFriends.isEmpty {
             Divider().opacity(0.4)
             Text("Or invite a saved friend")
                 .font(.system(size: 10.5)).foregroundStyle(.secondary)
@@ -718,24 +701,13 @@ struct InviteCard: View {
             .font(.system(size: 10.5)).foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)
     }
-
-    private func expiryText(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        if Calendar.current.isDateInToday(date) {
-            formatter.dateFormat = "'expires today' HH:mm"
-        } else if Calendar.current.isDateInTomorrow(date) {
-            formatter.dateFormat = "'until tomorrow' HH:mm"
-        } else {
-            formatter.dateFormat = "'until' EEE HH:mm"
-        }
-        return formatter.string(from: date)
-    }
 }
 
-/// The party's avatar stack: you, your friends, and a pulsing "empty seat"
-/// while you wait — so it's clear someone is expected.
+/// The party's avatar stack: you, your friends, and a tappable "+" seat that
+/// opens a friend picker — selecting one sends them an invitation.
 struct PartyAvatarStack: View {
     @ObservedObject var state = AppState.shared
+    @ObservedObject var social = SocialService.shared
 
     var body: some View {
         HStack(spacing: -6) {
@@ -745,23 +717,49 @@ struct PartyAvatarStack: View {
                     .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
                     .transition(.scale.combined(with: .opacity))
             }
-            if state.friends.isEmpty {
+
+            // The "+" seat: pick a friend to invite right here.
+            Menu {
+                let invitable = social.invitableFriends
+                if invitable.isEmpty {
+                    Text("No friends yet")
+                    Button("Add a simulated friend") { social.addSimulatedFriend() }
+                } else {
+                    Text("Invite to this party")
+                    ForEach(invitable) { friend in
+                        let invited = social.invitedFriendIDs.contains(friend.id)
+                        Button {
+                            social.sendInvitation(to: friend)
+                        } label: {
+                            let dot = friend.online ? "🟢 " : "⚪ "
+                            Label(
+                                "\(dot)\(friend.name)\(invited ? " ✓" : "")",
+                                systemImage: invited ? "checkmark" : "paperplane"
+                            )
+                        }
+                        .disabled(invited)
+                    }
+                    Divider()
+                    Button("Add a simulated friend") { social.addSimulatedFriend() }
+                }
+            } label: {
                 Circle()
                     .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [3, 2]))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color.sofaBlue)
                     .frame(width: 22, height: 22)
                     .overlay(
                         Image(systemName: "plus")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.tertiary)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color.sofaBlue)
                     )
                     .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
-                    .symbolEffect(.pulse)
+                    .background(Circle().fill(Color.sofaBlue.opacity(0.12)))
             }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Invite a friend to this party")
         }
-        .help(state.friends.isEmpty
-              ? "Just you so far — an empty seat waiting"
-              : "You, " + state.friends.map(\.name).joined(separator: ", "))
     }
 }
 
@@ -773,11 +771,11 @@ struct OnlineFriendsBanner: View {
     @ObservedObject var social = SocialService.shared
 
     private var onlineFriends: [SavedSofaFriend] {
-        social.friends.filter(\.online)
+        social.invitableFriends.filter(\.online)
     }
 
     var body: some View {
-        if social.ready, !onlineFriends.isEmpty, !state.hosting, !state.joining {
+        if !onlineFriends.isEmpty, !state.hosting, !state.joining {
             VStack(alignment: .leading, spacing: 5) {
                 Label(onlineFriends.count == 1
                       ? "\(onlineFriends[0].name) is online now"
@@ -847,15 +845,16 @@ struct IdentityFriendsRow: View {
 
                 // A small, fixed gap — not a Spacer — so the name and the
                 // friends/add control stay snug instead of stretching apart.
-                if social.ready {
+                if social.ready || !social.invitableFriends.isEmpty {
                     Divider().frame(height: 16).opacity(0.5)
                 }
 
                 // Your people: overlapping avatars + add button, like the
-                // party card uses in-room.
-                if social.ready && !social.friends.isEmpty {
+                // party card uses in-room. Simulated friends show even if the
+                // relay is down (they're local), so don't gate on `ready`.
+                if !social.invitableFriends.isEmpty {
                     HStack(spacing: -6) {
-                        ForEach(social.friends.prefix(4)) { friend in
+                        ForEach(social.invitableFriends.prefix(4)) { friend in
                             AvatarView(name: friend.name, size: 22)
                                 .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
                                 .overlay(alignment: .bottomTrailing) {
@@ -869,8 +868,8 @@ struct IdentityFriendsRow: View {
                                 .help(friend.name + (friend.online ? " · online" : " · offline"))
                         }
                     }
-                    if social.friends.count > 4 {
-                        Text("+\(social.friends.count - 4)")
+                    if social.invitableFriends.count > 4 {
+                        Text("+\(social.invitableFriends.count - 4)")
                             .font(.system(size: 10.5)).foregroundStyle(.secondary)
                     }
                 }
@@ -881,7 +880,7 @@ struct IdentityFriendsRow: View {
                         NSPasteboard.general.setString(social.friendLink, forType: .string)
                         AppState.shared.showToast("Friend link copied — send it once; invitations then arrive right in Sofa.")
                     } label: {
-                        if social.friends.isEmpty {
+                        if social.invitableFriends.isEmpty {
                             Label("Add a friend", systemImage: "person.badge.plus")
                                 .font(.system(size: 11))
                         } else {
@@ -943,13 +942,20 @@ struct PartyInvitationCard: View {
     @ObservedObject var state = AppState.shared
     @ObservedObject var social = SocialService.shared
 
+    /// A locally-fabricated invite from the ⋯ simulated-friend tool; its Join
+    /// makes the fake friend appear, so it stays enabled even while hosting.
+    private var isSimulated: Bool { invite.id.hasPrefix("sim-invite-") }
+
     var body: some View {
         HStack(spacing: 9) {
             AvatarView(name: invite.fromName, size: 28)
             VStack(alignment: .leading, spacing: 1) {
-                Text("\(invite.fromName) invited you")
+                Text(invite.title.map { "Watch “\($0)” with \(invite.fromName)?" }
+                     ?? "Watch with \(invite.fromName)?")
                     .font(.system(size: 11.5, weight: .semibold))
-                Text(invite.title.map { "Watch “\($0)” together?" } ?? "Join their watch party?")
+                    .lineLimit(2)
+                Text(isSimulated ? "Simulated invite — tap Join to place them in your party"
+                                 : "Tap Join and Sofa syncs you both.")
                     .font(.system(size: 10.5)).foregroundStyle(.secondary)
             }
             Spacer(minLength: 4)
@@ -957,7 +963,10 @@ struct PartyInvitationCard: View {
                 .sofaGlassButton()
             Button("Join") { social.acceptInvitation(id: invite.id) }
                 .sofaProminentButton()
-                .disabled(state.inRoom || state.hosting || state.joining)
+                // A sim invite only places a friend in your *current* party, so
+                // it's actionable exactly while in a room; a real one only when
+                // you're free to leave and join theirs.
+                .disabled(isSimulated ? !state.inRoom : (state.inRoom || state.hosting || state.joining))
         }
         .padding(10)
         .background(Color.sofaBlue.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
@@ -1030,18 +1039,6 @@ struct PlayerCard: View {
                 ) { state.selectPlayer(player) }
             }
 
-            // Built-in player only appears as a row while it's the one in use
-            // (eg. Test Zone); otherwise it lives in the overflow menu below.
-            if state.playerChoice == .builtin {
-                SourceRow(
-                    player: .builtin,
-                    selected: true,
-                    live: nil,
-                    title: state.builtin.mediaName,
-                    poster: nil
-                ) { }
-            }
-
             // Live sync confidence: green when aligned, one-tap fix when not.
             if state.friendMatchesLocalMedia {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -1109,7 +1106,7 @@ struct PlayerCard: View {
                 .buttonStyle(.plain)
             }
 
-            if state.detectedSources.isEmpty && state.playerChoice != .builtin {
+            if state.detectedSources.isEmpty {
                 Text("Open a movie in QuickTime, VLC, Apple TV or your browser (YouTube, Netflix, Prime Video…) and it’ll show up here.")
                     .font(.system(size: 11)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1123,14 +1120,12 @@ struct PlayerCard: View {
                     .padding(.top, 2)
             }
 
-            // Escape hatch: pick an app that isn't open yet, or Sofa's own player.
+            // Escape hatch: pick an app that isn't open yet.
             HStack {
                 Menu {
                     ForEach(PlayerChoice.externalPlayers) { p in
                         Button(p.shortLabel) { state.selectPlayer(p) }
                     }
-                    Divider()
-                    Button("Sofa’s built-in player") { state.selectPlayer(.builtin) }
                 } label: {
                     Text("Choose another player…")
                         .font(.system(size: 11))
@@ -1149,18 +1144,16 @@ struct PlayerCard: View {
             }
             .padding(.top, 2)
 
-            // Setup hint + detailed live status for the selected external player.
-            if state.playerChoice != .builtin {
-                Divider().opacity(0.4)
-                Text(state.playerChoice.hint)
-                    .font(.system(size: 11)).foregroundStyle(.tertiary)
+            // Setup hint + detailed live status for the selected player.
+            Divider().opacity(0.4)
+            Text(state.playerChoice.hint)
+                .font(.system(size: 11)).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            if liveIsWarning {
+                Text(liveText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
-                if liveIsWarning {
-                    Text(liveText)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
         }
     }
@@ -1211,10 +1204,6 @@ struct SyncStatusChip: View {
     @ObservedObject var state = AppState.shared
 
     private var localTime: Double? {
-        if state.playerChoice == .builtin {
-            let seconds = state.builtin.player.currentTime().seconds
-            return seconds.isFinite ? seconds : nil
-        }
         if case .playing(let time, _) = state.extLive { return time }
         return nil
     }
@@ -1413,10 +1402,7 @@ struct SourceRow: View {
 
     /// The app icon (or a symbol) shown when there's no content preview.
     private var fallbackImage: NSImage? {
-        if player == .builtin {
-            return NSImage(systemSymbolName: "sofa.fill", accessibilityDescription: nil)
-        }
-        return player.appIcon
+        player.appIcon
             ?? NSImage(systemSymbolName: "play.rectangle", accessibilityDescription: nil)
     }
 
@@ -1432,7 +1418,6 @@ struct SourceRow: View {
                 return "\(prefix)\(playing ? "▶" : "⏸") \(PlayerCard.fmt(t)) · synced"
             }
         }
-        if player == .builtin { return "Play a file inside Sofa" }
         return "Running · tap to sync"
     }
 
@@ -1440,71 +1425,6 @@ struct SourceRow: View {
         if case .blocked = live { return true }
         if case .notAuthorized = live { return true }
         return false
-    }
-}
-
-/// AppKit's AVPlayerView rather than SwiftUI's `VideoPlayer`: the latter's
-/// _AVKit_SwiftUI overlay fails to build its generic metadata at runtime here
-/// and aborts the process (EXC_CRASH in getSuperclassMetadata) the moment a
-/// video is shown.
-struct PlayerView: NSViewRepresentable {
-    let player: AVPlayer
-
-    func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView()
-        view.player = player
-        view.controlsStyle = .inline
-        view.videoGravity = .resizeAspect
-        return view
-    }
-
-    func updateNSView(_ view: AVPlayerView, context: Context) {
-        if view.player !== player { view.player = player }
-    }
-}
-
-struct BuiltinStage: View {
-    @ObservedObject var state = AppState.shared
-    @ObservedObject var builtin = AppState.shared.builtin
-
-    var body: some View {
-        Group {
-            if builtin.hasMedia {
-                PlayerView(player: builtin.player)
-                    .frame(height: 210)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-            } else {
-                VStack(spacing: 10) {
-                    Text("Drop a movie or song here")
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(.white.opacity(0.75))
-                    HStack(spacing: 8) {
-                        Button("Open File…") { openFile() }.sofaGlassButton()
-                        Button("Test Video") { state.builtin.loadDemo() }.sofaGlassButton()
-                    }
-                }
-                .frame(maxWidth: .infinity, minHeight: 150)
-                .background(Color.black.opacity(0.82), in: RoundedRectangle(cornerRadius: 10))
-                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                    _ = providers.first?.loadObject(ofClass: URL.self) { url, _ in
-                        if let url {
-                            DispatchQueue.main.async { state.builtin.load(url: url) }
-                        }
-                    }
-                    return true
-                }
-            }
-        }
-    }
-
-    private func openFile() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose a movie or song"
-        panel.allowedContentTypes = [.movie, .video, .mpeg4Movie, .quickTimeMovie, .audio, .mp3]
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            state.builtin.load(url: url)
-        }
     }
 }
 
@@ -1642,11 +1562,6 @@ struct AudioCard: View {
     var body: some View {
         Card {
             SectionLabel(text: "Audio")
-            if state.playerChoice == .builtin {
-                SliderRow(label: "Movie", value: $state.movieVolume, range: 0...100, suffix: "%") { v in
-                    state.builtin.volume = Float(v / 100)
-                }
-            }
             if state.detectedCallApp?.bundleID == "com.apple.FaceTime" {
                 SliderRow(label: "Call", value: $state.callVolume, range: 0...100, suffix: "%") { v in
                     state.setCallVolume(v)

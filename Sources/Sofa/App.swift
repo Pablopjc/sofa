@@ -87,9 +87,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // Re-fit the panel whenever the content changes shape (entering a room,
         // switching player, a card appearing). objectWillChange fires *before*
         // the change lands, so measure on the next turn of the run loop.
-        Publishers.Merge3(
+        Publishers.Merge(
             AppState.shared.objectWillChange,
-            AppState.shared.builtin.objectWillChange,
             SocialService.shared.objectWillChange
         )
             .debounce(for: .milliseconds(50), scheduler: RunLoop.main)

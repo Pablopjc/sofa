@@ -454,7 +454,6 @@ final class PlayerBridge {
         case .safari: return Self.safariAS(Self.browserGetJS)
         case .music: return Self.trackScript(app: "Music")
         case .spotify: return Self.trackScript(app: "Spotify")
-        case .builtin: return ""
         }
     }
 
@@ -467,7 +466,6 @@ final class PlayerBridge {
         case .safari: return Self.safariAS(Self.browserCmdJS("play"))
         case .music: return "tell application \"Music\" to play"
         case .spotify: return "tell application \"Spotify\" to play"
-        case .builtin: return ""
         }
     }
 
@@ -480,7 +478,6 @@ final class PlayerBridge {
         case .safari: return Self.safariAS(Self.browserCmdJS("pause"))
         case .music: return "tell application \"Music\" to pause"
         case .spotify: return "tell application \"Spotify\" to pause"
-        case .builtin: return ""
         }
     }
 
@@ -493,7 +490,6 @@ final class PlayerBridge {
         case .safari: return Self.safariAS(Self.browserSeekJS(t))
         case .music: return "tell application \"Music\" to set player position to \(t)"
         case .spotify: return "tell application \"Spotify\" to set player position to \(t)"
-        case .builtin: return ""
         }
     }
 
