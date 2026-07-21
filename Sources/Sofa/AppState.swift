@@ -156,12 +156,16 @@ final class AppState: ObservableObject {
     @Published var disconnected = false
     @Published var inviteLink = ""
     @Published var inviteCode = ""
+    /// When the online room (and its invite link) stops working.
+    @Published var roomExpiresAt: Date?
     @Published var joinAddress = ""
     @Published var joinError: String?
     @Published var joining = false
     @Published var hosting = false
     @Published var hostError: String?
     @Published private(set) var roomTransport: RoomTransport?
+    /// Dev snapshot only (SOFA_SNAPSHOT_ROOM): pose as an online host.
+    func setRoomTransportForSnapshot(_ t: RoomTransport) { roomTransport = t }
     private var roomOperationID: UUID?
 
     var roomIsOnline: Bool { roomTransport == .online }
@@ -300,6 +304,21 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Drives the inline "Copied ✓" confirmation on the copy button (this
+    /// toolchain has no SwiftUI @State, so the flag lives here).
+    @Published var inviteLinkJustCopied = false
+    private var copyFlagTimer: Timer?
+    func copyInviteLink() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(inviteLink, forType: .string)
+        showToast("Invite link copied — send it to your friend")
+        inviteLinkJustCopied = true
+        copyFlagTimer?.invalidate()
+        copyFlagTimer = Timer.scheduledTimer(withTimeInterval: 1.6, repeats: false) { [weak self] _ in
+            DispatchQueue.main.async { self?.inviteLinkJustCopied = false }
+        }
+    }
+
     var peersText: String {
         if !friends.isEmpty {
             return "· with " + friends.map(\.name).joined(separator: ", ")
@@ -311,6 +330,16 @@ final class AppState: ObservableObject {
     }
 
     // MARK: - Room lifecycle
+
+    /// Friend to auto-invite the moment the party we're about to host is up.
+    private var pendingAutoInviteFriend: SavedSofaFriend?
+
+    /// One tap from the idle screen: start a party and invite this friend.
+    func startPartyInviting(_ friend: SavedSofaFriend) {
+        guard !hosting, !joining, !inRoom else { return }
+        pendingAutoInviteFriend = friend
+        hostRoom()
+    }
 
     func hostRoom() {
         guard !hosting, !joining, !inRoom else { return }
@@ -326,11 +355,14 @@ final class AppState: ObservableObject {
             switch result {
             case .success(let room):
                 // The friend-facing link is the https invite page: clickable in
-                // iMessage, explains itself to friends without Sofa, and hands
-                // installed apps the sofa:// deep link. The secret rides in the
-                // fragment, which browsers never send to the server.
+                // any messenger, explains itself to friends without Sofa, and
+                // hands installed apps the sofa:// deep link. The secret rides
+                // in the fragment, which browsers never send to the server, and
+                // so does the host's friend capability so a first-time guest can
+                // add the host back in one tap once they've joined.
                 self.inviteLink = Self.webInviteLink(roomID: room.roomID, secret: room.secret)
                 self.inviteCode = room.roomID
+                self.roomExpiresAt = room.expiresAt.map { Date(timeIntervalSince1970: $0 / 1000) }
                 self.isHosting = true
                 self.roomTransport = .online
                 SocialService.shared.clearInvitedMarks()
@@ -338,8 +370,14 @@ final class AppState: ObservableObject {
                 // The single most common next step — skip the extra click.
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(self.inviteLink, forType: .string)
-                self.showToast("Party ready — invite link copied, paste it in iMessage")
+                self.showToast("Party ready — invite link copied, send it to your friend")
+                // Auto-invite the friend the host tapped on the idle screen.
+                if let friend = self.pendingAutoInviteFriend {
+                    self.pendingAutoInviteFriend = nil
+                    SocialService.shared.sendInvitation(to: friend)
+                }
             case .failure(let error):
+                self.pendingAutoInviteFriend = nil
                 self.sync.stop()
                 self.hostError = "Could not start an online party. \(error.localizedDescription)"
             }
@@ -347,11 +385,23 @@ final class AppState: ObservableObject {
     }
 
     /// https://<relay>/j/ROOMID#SECRET — the relay serves a tiny invite page.
+    /// The secret rides in the fragment, which browsers never send to the
+    /// server, and is room-scoped and expiring (never a durable identity).
     static func webInviteLink(roomID: String, secret: String) -> String {
         let configured = Bundle.main.object(forInfoDictionaryKey: "SofaRelayURL") as? String
             ?? "https://sofa-sync-relay.pablopjc.workers.dev"
         let base = configured.hasSuffix("/") ? String(configured.dropLast()) : configured
         return "\(base)/j/\(roomID)#\(secret)"
+    }
+
+    /// A ready-to-send message, not a bare URL — tells a remote friend what it
+    /// is, that the action is a tap, and that not having Sofa is fine.
+    var inviteShareText: String {
+        var line = "Movie night on Sofa"
+        if let title = nowPlaying, !title.isEmpty { line += " — watching “\(title)”" }
+        line += " — tap to join: \(inviteLink)"
+        if roomIsOnline { line += "\nNo Sofa yet? The link installs it free, then drops you into the party." }
+        return line
     }
 
     /// Explicit legacy mode for a trusted local network. Normal parties use the
@@ -389,6 +439,12 @@ final class AppState: ObservableObject {
             joinError = "That invite link is not valid. Ask your friend to copy the full link again."
             return
         }
+        // The visible room code alone can't join — the secret is only in the
+        // full link. Say so plainly instead of a doomed connection attempt.
+        if case .bareCode(let code) = target {
+            joinError = "“\(code)” is just the room name — paste the full invite link your friend sent you."
+            return
+        }
         let operationID = UUID()
         roomOperationID = operationID
         joinError = nil
@@ -415,6 +471,8 @@ final class AppState: ObservableObject {
             sync.connectOnline(roomID: roomID, secret: secret, completion: completion)
         case .lan(let address, let token):
             sync.connect(to: address, token: token, completion: completion)
+        case .bareCode:
+            break // handled above
         }
     }
 
@@ -528,6 +586,7 @@ final class AppState: ObservableObject {
         roomTransport = nil
         inviteLink = ""
         inviteCode = ""
+        roomExpiresAt = nil
         joinAddress = ""
         peerCount = 0
         mediaActive = false

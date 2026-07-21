@@ -331,6 +331,10 @@ struct IdleView: View {
             // instead of a floating name pill plus a separate explainer card.
             IdentityFriendsRow(displayName: displayName, normalize: normalizeDisplayName)
 
+            // If a saved friend is online right now, offer to start with them
+            // directly — the fastest possible path to a synced movie.
+            OnlineFriendsBanner(normalize: normalizeDisplayName)
+
             Button {
                 normalizeDisplayName()
                 state.hostRoom()
@@ -507,106 +511,312 @@ struct Card<Content: View>: View {
     }
 }
 
+/// Presents the macOS share sheet from the menu-bar panel (no NSView anchor
+/// needed at the call site — it hangs off the visible window's content view).
+enum SharePresenter {
+    @MainActor static func present(_ items: [Any]) {
+        guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible }),
+              let anchor = window.contentView else { return }
+        let picker = NSSharingServicePicker(items: items)
+        let rect = NSRect(x: anchor.bounds.midX - 1, y: anchor.bounds.minY + 40, width: 2, height: 2)
+        picker.show(relativeTo: rect, of: anchor, preferredEdge: .maxY)
+    }
+}
+
 struct InviteCard: View {
     @ObservedObject var state = AppState.shared
     @ObservedObject var social = SocialService.shared
 
-    /// The visible room ID is never the long capability secret in the link.
-    private var roomCode: String {
-        state.inviteCode
+    private var roomCode: String { state.inviteCode }
+
+    /// Online first, then by name, so the friend most likely to answer is first.
+    private var sortedFriends: [SavedSofaFriend] {
+        social.friends.sorted {
+            $0.online != $1.online ? $0.online : $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
     }
 
     var body: some View {
         Card {
+            // Header: who's in the party, with a waiting seat until they arrive.
             HStack {
                 SectionLabel(text: "Your party")
                 Spacer()
-                // Everyone here, as avatars — you first.
-                HStack(spacing: -6) {
-                    AvatarView(name: state.displayName, size: 22)
-                    ForEach(state.friends) { friend in
-                        AvatarView(name: friend.name, size: 22)
-                            .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
+                PartyAvatarStack()
+            }
+
+            statusLine
+
+            if state.roomIsOnline {
+                onlineInvite
+            } else {
+                lanInvite
+            }
+        }
+        .animation(.spring(duration: 0.4), value: state.friends.count)
+    }
+
+    // MARK: - Status
+
+    @ViewBuilder private var statusLine: some View {
+        if !state.friends.isEmpty {
+            Label("\(state.friends.map(\.name).joined(separator: ", ")) is here — hit play!",
+                  systemImage: "checkmark.circle.fill")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Color.green)
+                .transition(.opacity)
+        } else if state.peerCount > 1 {
+            Label("Someone's joining…", systemImage: "person.crop.circle.badge.clock")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Color.sofaBlue)
+                .symbolEffect(.pulse)
+        } else {
+            Label("Waiting for your friend to join…", systemImage: "hourglass")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .symbolEffect(.pulse)
+        }
+    }
+
+    // MARK: - Online invite
+
+    @ViewBuilder private var onlineInvite: some View {
+        // The link is the hero: one obvious blue action to send it.
+        HStack(spacing: 8) {
+            Button {
+                SharePresenter.present([state.inviteShareText])
+            } label: {
+                Label("Send invite", systemImage: "paperplane.fill")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 2)
+            }
+            .sofaProminentButton()
+
+            Button {
+                state.copyInviteLink()
+            } label: {
+                Label(state.inviteLinkJustCopied ? "Copied" : "Copy",
+                      systemImage: state.inviteLinkJustCopied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 12))
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .buttonStyle(SofaSecondaryCapsuleButtonStyle())
+            .help("Copy the invite link to paste anywhere")
+        }
+        .animation(.easeInOut(duration: 0.2), value: state.inviteLinkJustCopied)
+
+        // Coach + reassurance, exactly where a first-timer needs it.
+        Label("Send the link in WhatsApp, Messages, anywhere — your friend just taps it to join.",
+              systemImage: "link")
+            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        Text("Your friend doesn't need Sofa yet — the link installs it free, then drops them into your party.")
+            .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+
+        // Demoted room-code reference: a name, not the thing you send.
+        HStack(spacing: 5) {
+            Text("Room")
+                .font(.system(size: 10)).foregroundStyle(.tertiary)
+            Text(roomCode)
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+            if let expiry = state.roomExpiresAt {
+                Text("· \(expiryText(expiry))")
+                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+            }
+        }
+
+        savedFriendsSection
+    }
+
+    @ViewBuilder private var savedFriendsSection: some View {
+        if !social.friends.isEmpty {
+            Divider().opacity(0.4)
+            Text("Or invite a saved friend")
+                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(sortedFriends) { friend in
+                        let invited = social.invitedFriendIDs.contains(friend.id)
+                        Button {
+                            social.sendInvitation(to: friend)
+                        } label: {
+                            HStack(spacing: 5) {
+                                AvatarView(name: friend.name, size: 18)
+                                    .overlay(alignment: .bottomTrailing) {
+                                        if friend.online {
+                                            Circle().fill(Color.green)
+                                                .frame(width: 6, height: 6)
+                                                .overlay(Circle().strokeBorder(.background, lineWidth: 1))
+                                        }
+                                    }
+                                Text(friend.name)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .lineLimit(1)
+                                Image(systemName: invited ? "checkmark" : "paperplane")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(SofaSecondaryCapsuleButtonStyle())
+                        .disabled(invited)
+                        .help(invited
+                              ? "\(friend.name) already got tonight's invitation"
+                              : friend.online
+                                ? "Invite \(friend.name) — pops up right in their Sofa"
+                                : "\(friend.name) looks offline — invite copies the link instead")
                     }
                 }
-                .help(state.friends.isEmpty
-                      ? "Just you so far"
-                      : "You, " + state.friends.map(\.name).joined(separator: ", "))
             }
-
-            if state.friends.isEmpty {
-                Text("Waiting for friends — send them the invite:")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            } else {
-                Text("Here with " + state.friends.map(\.name).joined(separator: ", "))
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-
-            // The room code is the star; the raw link stays behind Copy/Share.
-            // Smaller boxes + fixedSize buttons so "Copy Link" never truncates.
-            HStack(spacing: 3) {
-                ForEach(Array(roomCode.enumerated()), id: \.offset) { _, ch in
-                    Text(String(ch))
-                        .font(.system(size: 15, weight: .bold, design: .monospaced))
-                        .frame(width: 22, height: 28)
-                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
-                }
-                Spacer(minLength: 8)
-                Button("Copy Link") {
+        } else {
+            // The exact screenshot case: no saved friends yet. Nudge the
+            // one-time friend-link exchange that makes next time a single tap.
+            Divider().opacity(0.4)
+            HStack(spacing: 8) {
+                Text("Watching with someone new? Swap friend links once and future invites arrive right inside Sofa.")
+                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(state.inviteLink, forType: .string)
-                    state.showToast("Invite link copied — paste it in iMessage")
+                    NSPasteboard.general.setString(social.friendLink, forType: .string)
+                    state.showToast("Your friend link is copied — send it once.")
+                } label: {
+                    Label("My friend link", systemImage: "person.badge.plus")
+                        .font(.system(size: 10.5))
                 }
-                .sofaGlassButton()
+                .buttonStyle(SofaSecondaryCapsuleButtonStyle())
                 .fixedSize()
-                ShareButton(link: state.inviteLink)
-                    .fixedSize()
-                    .padding(.horizontal, 12).padding(.vertical, 5)
-                    .sofaSurface(Capsule())
+                .disabled(social.friendLink.isEmpty)
             }
+        }
+    }
 
-            Text(state.roomIsOnline
-                 ? "Works across networks. Sofa relays only sync controls — never video or call audio."
-                 : "Local party: friends must be on the same local network.")
-                .font(.system(size: 10.5)).foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
+    // MARK: - LAN invite (unchanged spirit, simpler)
 
-            if state.roomIsOnline && !social.friends.isEmpty {
-                Divider().opacity(0.4)
-                Text("Invite a saved friend")
-                    .font(.system(size: 10.5)).foregroundStyle(.secondary)
-                // One tap per friend, right here — not buried in a menu.
+    @ViewBuilder private var lanInvite: some View {
+        HStack(spacing: 8) {
+            Button {
+                state.copyInviteLink()
+            } label: {
+                Label(state.inviteLinkJustCopied ? "Copied" : "Copy link",
+                      systemImage: state.inviteLinkJustCopied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 2)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .sofaProminentButton()
+            ShareButton(link: state.inviteLink, message: state.inviteShareText)
+                .fixedSize()
+                .padding(.horizontal, 12).padding(.vertical, 5)
+                .sofaSurface(Capsule())
+        }
+        .animation(.easeInOut(duration: 0.2), value: state.inviteLinkJustCopied)
+        Text("Local party: your friend must be on the same Wi-Fi. Sofa relays only sync controls.")
+            .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func expiryText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        if Calendar.current.isDateInToday(date) {
+            formatter.dateFormat = "'expires today' HH:mm"
+        } else if Calendar.current.isDateInTomorrow(date) {
+            formatter.dateFormat = "'until tomorrow' HH:mm"
+        } else {
+            formatter.dateFormat = "'until' EEE HH:mm"
+        }
+        return formatter.string(from: date)
+    }
+}
+
+/// The party's avatar stack: you, your friends, and a pulsing "empty seat"
+/// while you wait — so it's clear someone is expected.
+struct PartyAvatarStack: View {
+    @ObservedObject var state = AppState.shared
+
+    var body: some View {
+        HStack(spacing: -6) {
+            AvatarView(name: state.displayName, size: 22)
+            ForEach(state.friends) { friend in
+                AvatarView(name: friend.name, size: 22)
+                    .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
+                    .transition(.scale.combined(with: .opacity))
+            }
+            if state.friends.isEmpty {
+                Circle()
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [3, 2]))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 22, height: 22)
+                    .overlay(
+                        Image(systemName: "plus")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.tertiary)
+                    )
+                    .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
+                    .symbolEffect(.pulse)
+            }
+        }
+        .help(state.friends.isEmpty
+              ? "Just you so far — an empty seat waiting"
+              : "You, " + state.friends.map(\.name).joined(separator: ", "))
+    }
+}
+
+/// "Ana is online now — start with her" chips above the main action, so the
+/// happy path (a friend who's around) is one tap, not copy-paste-a-link.
+struct OnlineFriendsBanner: View {
+    let normalize: () -> Void
+    @ObservedObject var state = AppState.shared
+    @ObservedObject var social = SocialService.shared
+
+    private var onlineFriends: [SavedSofaFriend] {
+        social.friends.filter(\.online)
+    }
+
+    var body: some View {
+        if social.ready, !onlineFriends.isEmpty, !state.hosting, !state.joining {
+            VStack(alignment: .leading, spacing: 5) {
+                Label(onlineFriends.count == 1
+                      ? "\(onlineFriends[0].name) is online now"
+                      : "\(onlineFriends.count) friends online now",
+                      systemImage: "circle.fill")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .labelStyle(GreenDotLabelStyle())
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
-                        ForEach(social.friends) { friend in
-                            let invited = social.invitedFriendIDs.contains(friend.id)
+                        ForEach(onlineFriends) { friend in
                             Button {
-                                social.sendInvitation(to: friend)
+                                normalize()
+                                state.startPartyInviting(friend)
                             } label: {
                                 HStack(spacing: 5) {
                                     AvatarView(name: friend.name, size: 18)
-                                    Text(friend.name)
+                                    Text("Start with \(friend.name)")
                                         .font(.system(size: 11, weight: .medium))
                                         .lineLimit(1)
-                                    if invited {
-                                        Image(systemName: "checkmark")
-                                            .font(.system(size: 9, weight: .bold))
-                                            .foregroundStyle(.secondary)
-                                    }
                                 }
                             }
                             .buttonStyle(SofaSecondaryCapsuleButtonStyle())
-                            .disabled(invited)
-                            .opacity(friend.online ? 1 : 0.55)
-                            .help(invited
-                                  ? "\(friend.name) already got tonight's invitation"
-                                  : friend.online
-                                    ? "Invite \(friend.name) — pops up right in their Sofa"
-                                    : "\(friend.name) looks offline — the invite may not arrive")
+                            .help("Start a party and invite \(friend.name) right now")
                         }
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// Tiny green presence dot in place of the label's default icon tint.
+private struct GreenDotLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 5) {
+            configuration.icon.foregroundStyle(Color.green).font(.system(size: 7))
+            configuration.title
         }
     }
 }
@@ -648,7 +858,15 @@ struct IdentityFriendsRow: View {
                         ForEach(social.friends.prefix(4)) { friend in
                             AvatarView(name: friend.name, size: 22)
                                 .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
-                                .help(friend.name + (friend.online ? " · online" : ""))
+                                .overlay(alignment: .bottomTrailing) {
+                                    if friend.online {
+                                        Circle().fill(Color.green)
+                                            .frame(width: 6, height: 6)
+                                            .overlay(Circle().strokeBorder(.background, lineWidth: 1))
+                                    }
+                                }
+                                .opacity(friend.online ? 1 : 0.6)
+                                .help(friend.name + (friend.online ? " · online" : " · offline"))
                         }
                     }
                     if social.friends.count > 4 {
@@ -750,28 +968,44 @@ struct PartyInvitationCard: View {
 /// Native share sheet (Messages, Mail, AirDrop…) anchored to the button.
 struct ShareButton: NSViewRepresentable {
     let link: String
+    /// A human message that accompanies the URL in the share sheet.
+    var message: String = ""
+    var title: String = "Share…"
 
     func makeNSView(context: Context) -> NSButton {
-        let button = NSButton(title: "Share…", target: context.coordinator, action: #selector(Coordinator.share(_:)))
+        let button = NSButton(title: title, target: context.coordinator, action: #selector(Coordinator.share(_:)))
         // Chrome comes from the SwiftUI capsule wrapper at the call site;
         // the AppKit button itself stays bare.
         button.isBordered = false
         button.font = .systemFont(ofSize: 12)
         context.coordinator.link = link
+        context.coordinator.message = message
         return button
     }
 
     func updateNSView(_ nsView: NSButton, context: Context) {
         context.coordinator.link = link
+        context.coordinator.message = message
+        nsView.title = title
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     final class Coordinator: NSObject, NSSharingServicePickerDelegate {
         var link = ""
+        var message = ""
         @objc func share(_ sender: NSButton) {
-            guard let url = URL(string: link) else { return }
-            let picker = NSSharingServicePicker(items: [url])
+            // Share the message string (which contains the link) so recipients
+            // see context, not a bare URL. Fall back to the URL alone.
+            let items: [Any]
+            if !message.isEmpty {
+                items = [message]
+            } else if let url = URL(string: link) {
+                items = [url]
+            } else {
+                items = [link]
+            }
+            let picker = NSSharingServicePicker(items: items)
             picker.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         }
     }

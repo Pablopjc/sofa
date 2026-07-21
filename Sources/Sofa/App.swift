@@ -25,7 +25,7 @@ final class SofaPanel: NSPanel {
             if state.inRoom, !state.inviteLink.isEmpty {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(state.inviteLink, forType: .string)
-                state.showToast("Invite link copied — paste it in iMessage")
+                state.showToast("Invite link copied — send it to your friend")
                 return true
             }
         }

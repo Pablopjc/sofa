@@ -40,6 +40,17 @@ MainActor.assumeIsolated {
         if ProcessInfo.processInfo.environment["SOFA_SNAPSHOT_WELCOME"] != nil {
             AppState.shared.welcomeDone = false
         }
+        if ProcessInfo.processInfo.environment["SOFA_SNAPSHOT_ROOM"] != nil {
+            let s = AppState.shared
+            s.welcomeDone = true
+            s.inviteLink = "https://sofa-sync-relay.pablopjc.workers.dev/j/NR22LK#abcdefghijklmnopqrstuvwxyzABCDEFGHJKLMNPQRS"
+            s.inviteCode = "NR22LK"
+            s.roomExpiresAt = Date(timeIntervalSinceNow: 20 * 3600)
+            s.isHosting = true
+            s.inRoom = true
+            s.statusLabel = "Hosting online"
+            s.setRoomTransportForSnapshot(.online)
+        }
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 2.5))
         let dark = ProcessInfo.processInfo.environment["SOFA_APPEARANCE"] == "dark"
         // Approximate the glass panel behind the content so contrast reads

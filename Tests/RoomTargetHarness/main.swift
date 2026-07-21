@@ -52,9 +52,24 @@ check(
 )
 check(RoomTarget.parse("sofa://join/v2/AB3X7K/\(secret)") == nil, "future version")
 check(RoomTarget.parse("sofa://join/v1/AB3X7K/too-short") == nil, "short secret")
-check(RoomTarget.parse("sofa://join/v1/AB3X7K/\(secret)/extra") == nil, "extra path")
+check(RoomTarget.parse("sofa://join/v1/AB3X7K/\(secret)/extra") == nil, "extra path (4 parts)")
 check(RoomTarget.parse("sofa://join/v1/IIIIII/\(secret)") == nil, "ambiguous room code")
 check(RoomTarget.parse("not an invite") == nil, "random text")
 
+// The https invite page link parses back to the same online room.
+check(
+    RoomTarget.parse("https://sofa-sync-relay.pablopjc.workers.dev/j/AB3X7K#\(secret)")
+        == .online(roomID: "AB3X7K", secret: secret),
+    "https invite link"
+)
+check(
+    RoomTarget.parse("https://sofa-sync-relay.pablopjc.workers.dev/j/ab3x7k#\(secret)")
+        == .online(roomID: "AB3X7K", secret: secret),
+    "https invite link lowercased room id"
+)
+// A bare visible room code is recognized but flagged as not-joinable.
+check(RoomTarget.parse("AB3X7K") == .bareCode("AB3X7K"), "bare room code")
+check(RoomTarget.parse("ab3x7k") == .bareCode("AB3X7K"), "bare room code lowercased")
+
 if failures > 0 { exit(1) }
-print("RoomTarget parser: 14 checks passed")
+print("RoomTarget parser: 18 checks passed")

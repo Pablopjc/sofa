@@ -8,11 +8,16 @@ import Foundation
 enum RoomTarget: Equatable {
     case online(roomID: String, secret: String)
     case lan(address: String, token: String?)
+    /// Just the visible 6-char room code — recognizable but NOT joinable on
+    /// its own (the secret lives only in the full link). Surfaced so join()
+    /// can explain that instead of failing silently as a bogus LAN host.
+    case bareCode(String)
 
     var token: String? {
         switch self {
         case .online(_, let secret): return secret
         case .lan(_, let token): return token
+        case .bareCode: return nil
         }
     }
 
@@ -20,6 +25,7 @@ enum RoomTarget: Equatable {
         switch self {
         case .online(let roomID, _): return roomID
         case .lan(_, let token): return token ?? ""
+        case .bareCode(let code): return code
         }
     }
 
@@ -64,9 +70,15 @@ enum RoomTarget: Equatable {
             guard let components = URLComponents(string: text),
                   let secret = components.fragment,
                   isValidOnlineSecret(secret) else { return nil }
-            let parts = components.path.split(separator: "/").map(String.init)
-            guard parts.count == 2, parts[0] == "j", isValidRoomID(parts[1]) else { return nil }
-            return .online(roomID: parts[1].uppercased(), secret: secret)
+            let path = components.path.split(separator: "/").map(String.init)
+            guard path.count == 2, path[0] == "j", isValidRoomID(path[1]) else { return nil }
+            return .online(roomID: path[1].uppercased(), secret: secret)
+        }
+
+        // A bare 6-char room code someone read off the invite card: recognizable
+        // but not joinable without the secret. Flag it so join() can say so.
+        if isValidRoomID(text) {
+            return .bareCode(text.uppercased())
         }
 
         return parse(path: text)

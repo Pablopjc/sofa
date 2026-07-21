@@ -142,10 +142,10 @@ final class SocialService: ObservableObject {
                 } else {
                     // The relay already knows the friend is offline — be
                     // honest instead of letting the host wait forever, and
-                    // put the link in hand for the iMessage fallback.
+                    // put the link in hand for the messaging fallback.
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(state.inviteLink, forType: .string)
-                    state.showToast("\(friend.name) seems offline — link copied, send it over iMessage.")
+                    state.showToast("\(friend.name) seems offline — link copied, send it to them.")
                 }
                 await refreshFriends()
             } catch {
