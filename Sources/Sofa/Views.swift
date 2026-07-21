@@ -149,6 +149,7 @@ struct ContentView: View {
 struct TitleBar: View {
     @ObservedObject var state = AppState.shared
     @ObservedObject var social = SocialService.shared
+    @ObservedObject var fakeCall = FakeCall.shared
 
     var body: some View {
         HStack(spacing: 8) {
@@ -211,6 +212,9 @@ struct TitleBar: View {
                     Button("Add a simulated friend") { social.addSimulatedFriend() }
                     Button("Remove simulated friends") { social.removeSimulatedFriends() }
                         .disabled(social.simulatedFriends.isEmpty)
+                }
+                Button(fakeCall.visible ? "Hide simulated video call" : "Simulate a video call") {
+                    fakeCall.toggle()
                 }
                 Button("Quit Sofa") { NSApp.terminate(nil) }
             } label: {
