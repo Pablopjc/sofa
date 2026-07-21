@@ -1,7 +1,32 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 MainActor.assumeIsolated {
+    // Dev-only notification probe: SOFA_NOTIFY_TEST=1 prints the current
+    // authorization state, posts a test banner, and exits.
+    if ProcessInfo.processInfo.environment["SOFA_NOTIFY_TEST"] != nil {
+        _ = NSApplication.shared
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            print("requestAuthorization → granted=\(granted) error=\(error.map(String.init(describing:)) ?? "none")")
+            center.getNotificationSettings { settings in
+                print("authorizationStatus=\(settings.authorizationStatus.rawValue) (0 notDetermined, 1 denied, 2 authorized)")
+                print("alertSetting=\(settings.alertSetting.rawValue) alertStyle=\(settings.alertStyle.rawValue)")
+                let content = UNMutableNotificationContent()
+                content.title = "Sofa"
+                content.body = "Notification test — if you can read this on screen, banners work."
+                center.add(UNNotificationRequest(identifier: "sofa-notify-test", content: content, trigger: nil)) { addError in
+                    print("add → error=\(addError.map(String.init(describing:)) ?? "none")")
+                    exit(0)
+                }
+            }
+        }
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 15))
+        print("timed out")
+        exit(1)
+    }
+
     // Dev-only design snapshot (never in released builds):
     //   SOFA_SNAPSHOT=/path/out.png  [SOFA_APPEARANCE=dark|light]
     if let path = ProcessInfo.processInfo.environment["SOFA_SNAPSHOT"] {

@@ -139,15 +139,28 @@ vídeo se queda en su Space y solo se ve el telón negro vacío).
 app por su *designated requirement*; al cambiar de firma, pierde Accesibilidad y
 Automatización y los vuelve a pedir. Avisarlo siempre en las notas de release.
 
-**No hay banners de notificación.** Incluso firmada con Developer ID y
-notarizada, `UNUserNotificationCenter` devuelve `UNErrorDomain Code=1
-"Notifications are not allowed"` en este Mac (macOS 27 beta) y la app ni se
-registra en el centro de notificaciones. Se probó también la API antigua
-`NSUserNotification`: tampoco entrega. Causa probable: membresía de desarrollador
-aún propagándose, o comportamiento de la beta. **La app reintenta
-`requestAuthorization` en cada arranque y con cada invitación**, así que se
-activará sola si Apple lo permite. Mientras tanto la invitación llega dentro de
-la app: abre el panel, muestra `PartyInvitationCard` y suena un aviso.
+**Banners de notificación: RESUELTO (2026-07-21), pero conoce la trampa.**
+Durante meses `UNUserNotificationCenter` devolvió `UNErrorDomain Code=1
+"Notifications are not allowed"` incluso notarizada. Diagnóstico final con
+`/usr/bin/log` (ojo: `log` a secas es un builtin de zsh que se traga la
+salida): `usernoted` guardaba un registro para `com.pablo.sofa.native` con
+`authorizationStatus: Denied` pero todos los sub-ajustes Enabled — una
+denegación fantasma heredada de la era autofirmada/beta, invisible en
+Ajustes porque la app no estaba en la lista de `com.apple.ncprefs`
+(`defaults export com.apple.ncprefs -`). El almacén real (`~/Library/Group
+Containers/group.com.apple.usernoted/db2/db`) está protegido por TCC y no se
+puede editar sin Full Disk Access.
+
+**El arreglo:** añadir a `com.apple.ncprefs` una entrada para la app clonando
+los valores de una app de terceros que funcione (se usó WhatsApp: `auth: 47`,
+`flags: 278929422`, `content_visibility: 0`, `grouping: 0`, `path`), importar
+con `defaults import` y `killall cfprefsd usernoted usernotificationsd`.
+Tras eso: `authorizationStatus=2 (Authorized)`, banners entregándose.
+Si un amigo que usó versiones autofirmadas viejas sufre lo mismo, este es el
+remedio. La app sigue reintentando `requestAuthorization` en cada arranque, y
+el aviso dentro de la app (panel + `PartyInvitationCard` + sonido) se mantiene
+como respaldo. Sonda de diagnóstico: `SOFA_NOTIFY_TEST=1
+/Applications/Sofa.app/Contents/MacOS/Sofa` (modo dev en `main.swift`).
 
 **El helper de Theater tiene versión acoplada.** `PlayerBridge.swift` y
 `BrowserExtension/content.js` comparten un marcador (`0.1.30-efficiency`) que

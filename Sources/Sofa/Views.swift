@@ -31,6 +31,15 @@ extension View {
         }
     }
 
+    /// Capsule of real Liquid Glass (slider tracks) with a material fallback.
+    @ViewBuilder func sofaGlassCapsule() -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular, in: Capsule())
+        } else {
+            self.background(.ultraThickMaterial, in: Capsule())
+        }
+    }
+
     /// Inset surface (pills, cards, fields) with an appearance-aware fill and
     /// a hairline edge — defined enough to read over the glass in dark mode,
     /// still subtle in light. `shape` governs the corners.
@@ -1442,7 +1451,7 @@ struct SliderRow: View {
             Text(label).font(.system(size: 12)).foregroundStyle(.secondary)
                 .frame(width: 44, alignment: .leading)
             CapsuleSlider(value: $value, range: range, onChange: onChange)
-                .frame(height: 22)
+                .frame(height: 26)
             Text("\(Int(value))\(suffix)")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .monospacedDigit()
@@ -1451,8 +1460,8 @@ struct SliderRow: View {
     }
 }
 
-/// Control Center-style slider: a thick capsule track whose white fill IS the
-/// value — no thumb knob — like the system Display/Sound sliders.
+/// Control Center-style slider: a Liquid Glass capsule track whose white fill
+/// IS the value — no thumb knob — like the system Display/Sound sliders.
 struct CapsuleSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
@@ -1463,13 +1472,16 @@ struct CapsuleSlider: View {
             let span = range.upperBound - range.lowerBound
             let fraction = span > 0 ? CGFloat((value - range.lowerBound) / span) : 0
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.sofaSurface)
+                // The track is real glass; the shape below only clips the fill.
+                Capsule().fill(.clear)
                 Capsule()
                     .fill(.white)
                     .frame(width: max(geo.size.height, fraction * geo.size.width))
-                    .shadow(color: .black.opacity(0.18), radius: 1.5, y: 0.5)
+                    .shadow(color: .black.opacity(0.22), radius: 2, y: 0.5)
             }
-            .overlay(Capsule().strokeBorder(Color.sofaSurfaceStroke, lineWidth: 1))
+            .clipShape(Capsule())
+            .sofaGlassCapsule()
+            .overlay(Capsule().strokeBorder(Color.sofaSurfaceStroke, lineWidth: 0.5))
             .contentShape(Capsule())
             .gesture(
                 DragGesture(minimumDistance: 0)
