@@ -34,6 +34,12 @@ final class SocialService: ObservableObject {
     @Published private(set) var invitations: [SofaPartyInvitation] = []
     @Published private(set) var ready = false
     @Published var errorMessage: String?
+    /// Friends already invited to the current party (shown as ✓ chips).
+    @Published private(set) var invitedFriendIDs: Set<String> = []
+
+    func clearInvitedMarks() {
+        invitedFriendIDs = []
+    }
 
     fileprivate struct Credential: Codable { let id: String; let token: String }
     private struct Profile: Decodable {
@@ -126,11 +132,21 @@ final class SocialService: ObservableObject {
             do {
                 var body = ["friendID": friend.id, "roomID": state.inviteCode, "secret": secret]
                 if let title = state.nowPlaying, !title.isEmpty { body["title"] = title }
-                let _: InviteResponse = try await request(
+                let response: InviteResponse = try await request(
                     path: "/invites", method: "POST",
                     body: body
                 )
-                state.showToast("Invitation sent to \(friend.name).")
+                if response.delivered {
+                    invitedFriendIDs.insert(friend.id)
+                    state.showToast("Invitation sent to \(friend.name).")
+                } else {
+                    // The relay already knows the friend is offline — be
+                    // honest instead of letting the host wait forever, and
+                    // put the link in hand for the iMessage fallback.
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(state.inviteLink, forType: .string)
+                    state.showToast("\(friend.name) seems offline — link copied, send it over iMessage.")
+                }
                 await refreshFriends()
             } catch {
                 state.showToast("Couldn’t send the invitation to \(friend.name).")

@@ -28,13 +28,19 @@ enum RoomTarget: Equatable {
         return false
     }
 
-    /// Accepts a link copied out of a message, a bare online path, or the
-    /// legacy `host:port/CODE` form. Malformed and future-version links are
-    /// rejected rather than accidentally treated as a hostname.
+    /// Accepts a link copied out of a message (sofa:// or the https invite
+    /// page), a bare online path, or the legacy `host:port/CODE` form.
+    /// Malformed and future-version links are rejected rather than
+    /// accidentally treated as a hostname.
     static func parse(_ input: String) -> RoomTarget? {
         var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         if let range = text.range(
             of: #"sofa://join/[^\s<>\"]+"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) {
+            text = String(text[range])
+        } else if let range = text.range(
+            of: #"https?://[^\s<>\"]+/j/[^\s<>\"]+"#,
             options: [.regularExpression, .caseInsensitive]
         ) {
             text = String(text[range])
@@ -50,6 +56,17 @@ enum RoomTarget: Equatable {
                   components.query == nil,
                   components.fragment == nil else { return nil }
             return parse(path: components.percentEncodedPath)
+        }
+
+        // The web invite page: https://<relay>/j/ROOMID#SECRET. The fragment
+        // carries the capability secret; the room id is the last path part.
+        if text.lowercased().hasPrefix("http://") || text.lowercased().hasPrefix("https://") {
+            guard let components = URLComponents(string: text),
+                  let secret = components.fragment,
+                  isValidOnlineSecret(secret) else { return nil }
+            let parts = components.path.split(separator: "/").map(String.init)
+            guard parts.count == 2, parts[0] == "j", isValidRoomID(parts[1]) else { return nil }
+            return .online(roomID: parts[1].uppercased(), secret: secret)
         }
 
         return parse(path: text)

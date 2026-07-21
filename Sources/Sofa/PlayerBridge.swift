@@ -802,6 +802,36 @@ final class PlayerBridge {
 
     // MARK: - Applying remote commands
 
+    /// Local pause without a remote command (auto-pause when a friend drops).
+    /// Suppressed from the poll so it isn't re-broadcast as a user action.
+    func pauseLocally() {
+        guard let player, player.isRunning else { return }
+        suppressUntil = Date().addingTimeInterval(2)
+        osa(pauseScript(for: player), requiring: player) { _, _ in }
+        lastState = nil
+        wakePolling()
+    }
+
+    /// A play/pause/seek that silently fails means both sides drift apart with
+    /// no explanation — the worst failure mode a sync app can have. Surface it,
+    /// throttled to one toast per minute. Runs on the bridge's serial queue.
+    private var lastCommandErrorReportedAt = Date.distantPast
+    private func noteCommandResult(_ error: String?, player: PlayerChoice) {
+        guard let error, error != "SOFA_APP_NOT_RUNNING" else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastCommandErrorReportedAt) > 60 else { return }
+        lastCommandErrorReportedAt = now
+        let hint: String
+        if error.contains("1743") || error.localizedCaseInsensitiveContains("not authorized") {
+            hint = "macOS blocked Sofa from controlling \(player.shortLabel). Fix it in System Settings → Privacy & Security → Automation."
+        } else if error.contains("timed out") {
+            hint = "\(player.shortLabel) didn’t respond — sync may drift until it recovers."
+        } else {
+            hint = "Sofa couldn’t control \(player.shortLabel) — sync may drift."
+        }
+        DispatchQueue.main.async { AppState.shared.showToast(hint) }
+    }
+
     func applyRemote(_ msg: SyncMessage) {
         guard let player, player.isRunning else { return }
         suppressUntil = Date().addingTimeInterval(2)
@@ -810,13 +840,17 @@ final class PlayerBridge {
 
         switch msg.type {
         case "play":
-            osa(seekScript(for: player, to: time + latency), requiring: player) { [weak self] _, _ in
+            osa(seekScript(for: player, to: time + latency), requiring: player) { [weak self] _, err in
                 guard let self else { return }
-                self.osa(self.playScript(for: player), requiring: player) { _, _ in }
+                self.noteCommandResult(err, player: player)
+                self.osa(self.playScript(for: player), requiring: player) { _, err2 in
+                    self.noteCommandResult(err2, player: player)
+                }
             }
         case "pause":
-            osa(pauseScript(for: player), requiring: player) { [weak self] _, _ in
+            osa(pauseScript(for: player), requiring: player) { [weak self] _, err in
                 guard let self else { return }
+                self.noteCommandResult(err, player: player)
                 self.osa(self.seekScript(for: player, to: time), requiring: player) { _, _ in }
             }
         case "seek":
@@ -824,8 +858,9 @@ final class PlayerBridge {
             osa(
                 seekScript(for: player, to: time + (playing ? latency : 0)),
                 requiring: player
-            ) { [weak self] _, _ in
+            ) { [weak self] _, err in
                 guard let self else { return }
+                self.noteCommandResult(err, player: player)
                 let follow = playing ? self.playScript(for: player) : self.pauseScript(for: player)
                 self.osa(follow, requiring: player) { _, _ in }
             }

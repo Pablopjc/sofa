@@ -747,7 +747,13 @@ final class SyncEngine {
         guard let state, state.inRoom else { return }
         state.disconnected = true
         state.statusLabel = "Disconnected"
-        state.showToast("Connection lost — the party ended")
+        state.autoPauseIfPlaying()
+        // Guests keep a way back in: their last invite still identifies the
+        // party, so one tap can retry the join instead of ending the night.
+        state.canRejoin = !state.isHosting && state.lastJoinRaw != nil
+        state.showToast(state.canRejoin
+            ? "Connection lost — you can rejoin the party"
+            : "Connection lost — the party ended")
     }
 
     func stop() {
@@ -765,7 +771,15 @@ final class SyncEngine {
         awaitingWelcome = nil
         let oldClient = client
         client = nil
-        oldClient?.cancel()
+        // Give the "bye" frame a moment on the wire before tearing the socket
+        // down, so friends see us leave instantly instead of ~31s later when
+        // presence pruning finally gives up on us. The connection is already
+        // detached from `client`, so nothing else can reuse it.
+        if let oldClient {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                oldClient.cancel()
+            }
+        }
         if let pending { _ = pending.tracker.finish(false) }
         for p in serverPeers { p.cancel() }
         serverPeers = []
@@ -858,6 +872,8 @@ final class SyncEngine {
                 }
             case "bye":
                 if let id = msg.from { state.removeFriend(id: id) }
+            case "react":
+                if let emoji = msg.name { state.showRemoteReaction(emoji) }
             case "peers":
                 state.peerCount = msg.count ?? 0
             case "loaded":

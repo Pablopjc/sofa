@@ -11,6 +11,7 @@ export const CLIENT_MESSAGE_TYPES = [
   "pause",
   "seek",
   "tick",
+  "react",
   "bye",
 ] as const;
 
@@ -27,6 +28,8 @@ const fieldsByType: Record<ClientMessageType, ReadonlySet<string>> = {
   pause: new Set(["time", "playing", "name", "art", "url"]),
   seek: new Set(["time", "playing", "name", "art", "url"]),
   tick: new Set(["time", "playing", "name", "art", "url"]),
+  // Reactions carry the emoji in "name" (same ≤256-char validation as titles).
+  react: new Set(["name"]),
   bye: new Set(),
 };
 const requiredFieldsByType: Record<ClientMessageType, readonly string[]> = {
@@ -36,6 +39,7 @@ const requiredFieldsByType: Record<ClientMessageType, readonly string[]> = {
   pause: ["time"],
   seek: ["time", "playing"],
   tick: ["time"],
+  react: ["name"],
   bye: [],
 };
 

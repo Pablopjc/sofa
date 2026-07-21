@@ -81,12 +81,88 @@ async function connectToRoom(request: Request, env: Env, roomID: string): Promis
   return stub.fetch(new Request("https://room.internal/connect", request));
 }
 
+// Human-friendly invite page. The room secret travels only in the URL
+// fragment (#…), which browsers never send to the server, so this page can be
+// served (and cached) without ever seeing the capability secret.
+function invitePage(roomID: string): Response {
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Join the Sofa party ${roomID}</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    background: #101114; color: #f2f3f5; text-align: center;
+  }
+  @media (prefers-color-scheme: light) { body { background: #f3f4f6; color: #1c1c1e; } }
+  .card { max-width: 340px; padding: 40px 28px; }
+  .glyph { font-size: 56px; }
+  h1 { font-size: 22px; margin: 14px 0 6px; }
+  p { font-size: 14px; line-height: 1.45; opacity: 0.75; margin: 8px 0; }
+  .code { font-family: ui-monospace, monospace; font-weight: 700; letter-spacing: 3px; }
+  a.button {
+    display: block; margin: 22px 0 10px; padding: 13px 22px; border-radius: 999px;
+    background: #0A84FF; color: #fff; font-size: 16px; font-weight: 600; text-decoration: none;
+  }
+  a.plain { color: #0A84FF; font-size: 13px; text-decoration: none; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="glyph">🛋️</div>
+  <h1>Movie night awaits</h1>
+  <p>You’re invited to Sofa party <span class="code">${roomID}</span> — synchronized play, pause and skips with your friend.</p>
+  <a id="open" class="button" href="#">Open in Sofa</a>
+  <p id="broken" class="hidden">This invite link is incomplete — ask your friend to copy it again from Sofa.</p>
+  <p>Don’t have Sofa yet? <a class="plain" href="https://github.com/Pablopjc/sofa/releases/latest">Download it free for Mac</a>, then come back and tap the button.</p>
+</div>
+<script>
+  var secret = location.hash.replace(/^#/, "");
+  var open = document.getElementById("open");
+  if (/^[A-Za-z0-9_-]{43}$/.test(secret)) {
+    var deepLink = "sofa://join/v1/${roomID}/" + secret;
+    open.setAttribute("href", deepLink);
+    location.href = deepLink; // auto-open when Sofa is installed
+  } else {
+    open.classList.add("hidden");
+    document.getElementById("broken").classList.remove("hidden");
+  }
+</script>
+</body>
+</html>`;
+  return new Response(html, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy":
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
+    },
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === "GET" && (url.pathname === "/health" || url.pathname === "/healthz")) {
       return json({ ok: true, service: "sofa-sync-relay" });
+    }
+    if (request.method === "GET") {
+      const inviteMatch = /^\/j\/([^/]+)$/u.exec(url.pathname);
+      if (inviteMatch) {
+        const roomID = inviteMatch[1].toUpperCase();
+        if (!ROOM_ID_PATTERN.test(roomID)) return json({ error: "invalid_room_id" }, 404);
+        return invitePage(roomID);
+      }
     }
     if (url.pathname.startsWith("/v1/social/")) {
       const actor = request.headers.get("CF-Connecting-IP") ?? "social";

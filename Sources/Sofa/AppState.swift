@@ -28,13 +28,13 @@ enum PlayerChoice: String, CaseIterable, Identifiable {
 
     var hint: String {
         switch self {
-        case .quicktime: return "Open your movie in QuickTime as usual — Sofa mirrors every play, pause and skip."
-        case .vlc: return "Open your movie in VLC as usual — Sofa mirrors every play, pause and skip."
-        case .appleTV: return "Play your movie in the Apple TV app as usual — Sofa mirrors every play, pause and skip."
-        case .chrome: return "Keep the video tab in front (YouTube, Netflix, Prime Video, Disney+…). One-time setup: View → Developer → Allow JavaScript from Apple Events."
-        case .safari: return "Keep the video tab in front (YouTube, Netflix, Prime Video, Disney+…). One-time setup: Develop → Allow JavaScript from Apple Events."
-        case .music: return "Play your music in Apple Music as usual — playback stays in sync."
-        case .spotify: return "Play your music in Spotify as usual — playback stays in sync."
+        case .quicktime: return "Play your movie as usual — Sofa mirrors play, pause and skips."
+        case .vlc: return "Play your movie as usual — Sofa mirrors play, pause and skips."
+        case .appleTV: return "Play your movie as usual — Sofa mirrors play, pause and skips."
+        case .chrome: return "Keep the video tab in front. One-time setup: View → Developer → Allow JavaScript from Apple Events."
+        case .safari: return "Keep the video tab in front. One-time setup: Develop → Allow JavaScript from Apple Events."
+        case .music: return "Play your music as usual — playback stays in sync."
+        case .spotify: return "Play your music as usual — playback stays in sync."
         case .builtin: return "Open the same file on both Macs. Playback stays in sync."
         }
     }
@@ -201,6 +201,34 @@ final class AppState: ObservableObject {
     @Published var toast: String?
     private var toastTimer: Timer?
 
+    // Auto-pause when a friend drops or our own connection is lost.
+    @Published var autoPauseEnabled: Bool = UserDefaults.standard.object(
+        forKey: "SofaAutoPause"
+    ) as? Bool ?? true {
+        didSet { UserDefaults.standard.set(autoPauseEnabled, forKey: "SofaAutoPause") }
+    }
+
+    // "Resume where we left off": snapshot of the previous party's position.
+    struct LastSession: Codable, Equatable {
+        let title: String
+        let url: String?
+        let time: Double
+        let friendNames: [String]
+        let endedAt: Date
+    }
+    @Published private(set) var savedSessionForResume: LastSession?
+    @Published var resumeDismissed = false
+
+    // Rejoin after an unexpected drop (LAN parties have no auto-reconnect).
+    private(set) var lastJoinRaw: String?
+    @Published var canRejoin = false
+
+    /// The fixed reaction set; incoming reactions outside it are ignored.
+    static let reactionEmojis = ["😂", "🍿", "😱", "❤️", "👏", "😭"]
+
+    /// Permission pre-flight screen (from the welcome tour or the ⋯ menu).
+    @Published var showingSetupCheck = false
+
     // Keep the panel open on blur while something is loaded/playing.
     var mediaActive = false
 
@@ -237,7 +265,31 @@ final class AppState: ObservableObject {
     }
 
     func pruneFriends(olderThan seconds: TimeInterval) {
+        let dropped = friends.filter { Date().timeIntervalSince($0.lastSeen) > seconds }
+        guard !dropped.isEmpty else { return }
         friends.removeAll { Date().timeIntervalSince($0.lastSeen) > seconds }
+        // A pruned friend vanished mid-party (network drop, sleep) — unlike a
+        // clean "bye". Stop the movie so nobody silently runs ahead.
+        if autoPauseIfPlaying() {
+            showToast("Paused — \(dropped[0].name) lost connection")
+        } else {
+            showToast("\(dropped[0].name) lost connection")
+        }
+    }
+
+    /// Pauses the local player without waiting for a remote command.
+    /// Returns true when something was actually playing (and is now paused).
+    @discardableResult
+    func autoPauseIfPlaying() -> Bool {
+        guard autoPauseEnabled, inRoom, !isTestMode else { return false }
+        if playerChoice == .builtin {
+            guard builtin.player.rate > 0 else { return false }
+            builtin.player.pause()
+            return true
+        }
+        guard case .playing(_, true) = extLive else { return false }
+        PlayerBridge.shared.pauseLocally()
+        return true
     }
 
     func showToast(_ text: String) {
@@ -273,16 +325,33 @@ final class AppState: ObservableObject {
             self.hosting = false
             switch result {
             case .success(let room):
-                self.inviteLink = "sofa://join/v1/\(room.roomID)/\(room.secret)"
+                // The friend-facing link is the https invite page: clickable in
+                // iMessage, explains itself to friends without Sofa, and hands
+                // installed apps the sofa:// deep link. The secret rides in the
+                // fragment, which browsers never send to the server.
+                self.inviteLink = Self.webInviteLink(roomID: room.roomID, secret: room.secret)
                 self.inviteCode = room.roomID
                 self.isHosting = true
                 self.roomTransport = .online
+                SocialService.shared.clearInvitedMarks()
                 self.enterRoom(label: "Hosting online")
+                // The single most common next step — skip the extra click.
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(self.inviteLink, forType: .string)
+                self.showToast("Party ready — invite link copied, paste it in iMessage")
             case .failure(let error):
                 self.sync.stop()
                 self.hostError = "Could not start an online party. \(error.localizedDescription)"
             }
         }
+    }
+
+    /// https://<relay>/j/ROOMID#SECRET — the relay serves a tiny invite page.
+    static func webInviteLink(roomID: String, secret: String) -> String {
+        let configured = Bundle.main.object(forInfoDictionaryKey: "SofaRelayURL") as? String
+            ?? "https://sofa-sync-relay.pablopjc.workers.dev"
+        let base = configured.hasSuffix("/") ? String(configured.dropLast()) : configured
+        return "\(base)/j/\(roomID)#\(secret)"
     }
 
     /// Explicit legacy mode for a trusted local network. Normal parties use the
@@ -331,6 +400,7 @@ final class AppState: ObservableObject {
             guard self.roomOperationID == operationID else { return }
             self.joining = false
             if ok {
+                self.lastJoinRaw = raw
                 self.roomTransport = target.isOnline ? .online : .lan
                 self.enterRoom(label: target.isOnline ? "Connected online" : "Connected locally")
             } else if target.token == nil {
@@ -355,6 +425,9 @@ final class AppState: ObservableObject {
     private func enterRoom(label: String) {
         inRoom = true
         disconnected = false
+        canRejoin = false
+        resumeDismissed = false
+        savedSessionForResume = Self.loadLastSession()
         statusLabel = label
         startDetecting()
         // Default to whatever is already open, if the current pick isn't running.
@@ -369,7 +442,9 @@ final class AppState: ObservableObject {
     func markOnlineReconnecting() {
         guard inRoom, roomTransport == .online else { return }
         if !disconnected {
-            showToast("Connection lost — reconnecting…")
+            showToast(autoPauseIfPlaying()
+                ? "Paused — connection lost, reconnecting…"
+                : "Connection lost — reconnecting…")
         }
         disconnected = true
         statusLabel = "Reconnecting…"
@@ -433,7 +508,9 @@ final class AppState: ObservableObject {
     }
 
     func leaveRoom() {
+        saveSessionSnapshot()
         roomOperationID = nil
+        canRejoin = false
         if theaterActive || theaterTransitioning { stopTheater() }
         FakeCall.shared.hide()
         testFriend.leave()
@@ -589,6 +666,95 @@ final class AppState: ObservableObject {
             art: nowPlayingPoster,
             url: nowPlayingURL
         ))
+    }
+
+    // MARK: - Resume, rejoin, reactions, sync visibility
+
+    /// Persist tonight's stopping point so the next party with the same title
+    /// can offer "Resume at 1:12:03". Only meaningful progress is kept.
+    private func saveSessionSnapshot() {
+        guard inRoom, !isTestMode, let title = nowPlaying else { return }
+        let time: Double
+        if playerChoice == .builtin {
+            time = builtin.player.currentTime().seconds
+        } else if case .playing(let t, _) = extLive {
+            time = t
+        } else {
+            time = friendPlaybackTime ?? 0
+        }
+        guard time.isFinite, time > 180 else { return }
+        let snapshot = LastSession(
+            title: title, url: nowPlayingURL, time: time,
+            friendNames: friends.map(\.name), endedAt: Date()
+        )
+        if let data = try? JSONEncoder().encode(snapshot) {
+            UserDefaults.standard.set(data, forKey: "SofaLastSession")
+        }
+    }
+
+    static func loadLastSession() -> LastSession? {
+        guard let data = UserDefaults.standard.data(forKey: "SofaLastSession") else { return nil }
+        return try? JSONDecoder().decode(LastSession.self, from: data)
+    }
+
+    /// The saved position to offer right now, if tonight's media matches it.
+    var resumeCandidate: LastSession? {
+        guard inRoom, !resumeDismissed, let saved = savedSessionForResume,
+              Date().timeIntervalSince(saved.endedAt) < 14 * 24 * 3600,
+              let title = nowPlaying else { return nil }
+        let sameURL = saved.url != nil && saved.url == nowPlayingURL
+        let sameTitle = title.compare(saved.title, options: .caseInsensitive) == .orderedSame
+        guard sameURL || sameTitle else { return nil }
+        // Pointless once either side is already near the saved position.
+        if case .playing(let t, _) = extLive, abs(t - saved.time) < 90 { return nil }
+        return saved
+    }
+
+    /// Seeks both sides to the saved position (paused, so nobody races ahead).
+    func resumeLastSession() {
+        guard let saved = resumeCandidate else { return }
+        resumeDismissed = true
+        let message = SyncMessage(type: "seek", time: saved.time, playing: false)
+        if playerChoice == .builtin {
+            builtin.applyRemote(message)
+        } else {
+            PlayerBridge.shared.applyRemote(message)
+        }
+        sync.send(message)
+        showToast("Resumed at \(PlayerCard.fmt(saved.time)) — your friend jumps there too")
+    }
+
+    /// One-tap drift fix: seek the local player to the friend's position.
+    func matchFriendTime() {
+        guard let target = estimatedFriendPlaybackTime else { return }
+        let message = SyncMessage(type: "seek", time: target, playing: friendIsPlaying ?? true)
+        if playerChoice == .builtin {
+            builtin.applyRemote(message)
+        } else {
+            PlayerBridge.shared.applyRemote(message)
+        }
+        showToast("Matched your friend’s position")
+    }
+
+    /// Re-join the last party after an unexpected drop (LAN has no auto-retry).
+    func rejoinLastParty() {
+        guard let raw = lastJoinRaw else { return }
+        leaveRoom()
+        join(target: raw)
+    }
+
+    func sendReaction(_ emoji: String) {
+        guard inRoom else { return }
+        sync.send(SyncMessage(type: "react", name: emoji))
+        ReactionOverlay.shared.show(emoji)
+    }
+
+    func showRemoteReaction(_ emoji: String) {
+        // Strict whitelist: this draws over the whole screen (including the
+        // fullscreen movie), and the relay allows any ≤256-char string in
+        // `name` — so render nothing that isn't one of our own buttons.
+        guard inRoom, Self.reactionEmojis.contains(emoji) else { return }
+        ReactionOverlay.shared.show(emoji)
     }
 
     func joinFriendPlayback() {

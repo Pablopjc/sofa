@@ -8,6 +8,29 @@ import UserNotifications
 /// Borderless menu-bar panel that can take keyboard focus (for the join field).
 final class SofaPanel: NSPanel {
     override var canBecomeKey: Bool { true }
+
+    /// Esc closes the panel, like every transient menu-bar panel.
+    override func cancelOperation(_ sender: Any?) {
+        orderOut(nil)
+    }
+
+    /// ⌘C with no text focused copies the invite link while hosting. Runs
+    /// before the main menu's Copy key equivalent, and defers to it whenever
+    /// a text field (its field editor is an NSText) has focus.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "c",
+           !(firstResponder is NSText) {
+            let state = AppState.shared
+            if state.inRoom, !state.inviteLink.isEmpty {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(state.inviteLink, forType: .string)
+                state.showToast("Invite link copied — paste it in iMessage")
+                return true
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 }
 
 // MARK: - App delegate
@@ -42,14 +65,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             button.action = #selector(togglePanel)
             button.target = self
         }
-        // Swap armchair ⇄ sofa as friends come and go, so you can tell at a
-        // glance from the menu bar whether anyone is in the room.
+        // Swap armchair ⇄ sofa as friends come and go, dim the glyph while the
+        // connection is down, and keep the tooltip describing the live state —
+        // the menu bar icon is the only surface visible during the movie.
         // (@Published fires immediately, which sets the initial armchair.)
-        AppState.shared.$peerCount
-            .map { $0 > 1 } // the relay counts us too
-            .removeDuplicates()
-            .sink { [weak self] friendsConnected in
-                self?.updateTrayIcon(friendsConnected: friendsConnected)
+        Publishers.CombineLatest3(
+            AppState.shared.$peerCount.map { $0 > 1 }, // the relay counts us too
+            AppState.shared.$disconnected,
+            AppState.shared.$friends.map { $0.map(\.name) }
+        )
+            .removeDuplicates { $0 == $1 }
+            .sink { [weak self] friendsConnected, disconnected, names in
+                self?.updateTrayIcon(
+                    friendsConnected: friendsConnected,
+                    disconnected: disconnected,
+                    friendNames: names
+                )
             }
             .store(in: &cancellables)
 
@@ -181,12 +212,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// Lone armchair when nobody's around, 2-seat sofa once friends join.
-    private func updateTrayIcon(friendsConnected: Bool) {
+    /// Dimmed while reconnecting, so a dropped sync is visible at a glance.
+    private func updateTrayIcon(friendsConnected: Bool, disconnected: Bool, friendNames: [String]) {
         let name = friendsConnected ? "traySofaTemplate" : "trayTemplate"
         statusItem.button?.image = Self.trayIcon(named: name)
-        statusItem.button?.toolTip = friendsConnected
-            ? "Sofa — friends connected"
-            : "Sofa — watch together"
+        statusItem.button?.appearsDisabled = disconnected
+        if disconnected {
+            statusItem.button?.toolTip = "Sofa — connection lost, reconnecting…"
+        } else if !friendNames.isEmpty {
+            statusItem.button?.toolTip = "Sofa — with \(friendNames.joined(separator: ", "))"
+        } else {
+            statusItem.button?.toolTip = "Sofa — watch together"
+        }
     }
 
     /// Sofa's custom glyphs, as template images so macOS tints them like the

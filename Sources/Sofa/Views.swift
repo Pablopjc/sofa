@@ -7,22 +7,19 @@ import UniformTypeIdentifiers
 // MARK: - Liquid Glass helpers (official APIs, with pre-macOS 26 fallbacks)
 
 extension View {
-    /// Prominent action button: Liquid Glass on macOS 26+, bordered before.
-    @ViewBuilder func sofaProminentButton() -> some View {
-        if #available(macOS 26.0, *) {
-            self.buttonStyle(.glassProminent)
-        } else {
-            self.buttonStyle(.borderedProminent)
-        }
+    /// Prominent action button: a true capsule filled with Apple's vivid
+    /// systemBlue, like iOS "Continue" buttons. Drawn by hand because the
+    /// glass/bordered styles ignore `buttonBorderShape` and keep their own
+    /// rounded-rect chrome.
+    func sofaProminentButton() -> some View {
+        self.buttonStyle(SofaCapsuleButtonStyle())
     }
 
-    /// Secondary button: Liquid Glass on macOS 26+, bordered before.
-    @ViewBuilder func sofaGlassButton() -> some View {
-        if #available(macOS 26.0, *) {
-            self.buttonStyle(.glass)
-        } else {
-            self.buttonStyle(.bordered)
-        }
+    /// Secondary button: hand-drawn capsule on the shared surface fill, to
+    /// match the prominent capsule. (The system glass style keeps its own
+    /// rounded-rect chrome and leaks sampling artifacts inside the panel.)
+    func sofaGlassButton() -> some View {
+        self.buttonStyle(SofaSecondaryCapsuleButtonStyle())
     }
 
     /// Floating glass surface (toast, badges).
@@ -33,6 +30,61 @@ extension View {
             self.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
         }
     }
+
+    /// Inset surface (pills, cards, fields) with an appearance-aware fill and
+    /// a hairline edge — defined enough to read over the glass in dark mode,
+    /// still subtle in light. `shape` governs the corners.
+    func sofaSurface<S: InsettableShape>(_ shape: S) -> some View {
+        self
+            .background(Color.sofaSurface, in: shape)
+            .overlay(shape.strokeBorder(Color.sofaSurfaceStroke, lineWidth: 1))
+    }
+}
+
+/// iOS-style prominent capsule: vivid blue fill, white label, slight press dim.
+struct SofaCapsuleButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16).padding(.vertical, 7)
+            .background(Color.sofaBlue, in: Capsule())
+            .opacity(configuration.isPressed ? 0.75 : (isEnabled ? 1 : 0.45))
+            .contentShape(Capsule())
+    }
+}
+
+/// Secondary sibling of the prominent capsule: same silhouette, quiet fill.
+struct SofaSecondaryCapsuleButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 12).padding(.vertical, 5)
+            .sofaSurface(Capsule())
+            .opacity(configuration.isPressed ? 0.7 : (isEnabled ? 1 : 0.45))
+            .contentShape(Capsule())
+    }
+}
+
+extension Color {
+    /// White in dark mode, black in light — with its own alpha per mode.
+    private static func surface(dark: CGFloat, light: CGFloat) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return (isDark ? NSColor.white : NSColor.black)
+                .withAlphaComponent(isDark ? dark : light)
+        })
+    }
+    /// A flat white tint at 4.5% (the old fill) vanishes over dark glass; give
+    /// dark mode a stronger white and light mode a faint black instead.
+    static let sofaSurface = surface(dark: 0.085, light: 0.045)
+    static let sofaSurfaceStroke = surface(dark: 0.11, light: 0.08)
+
+    /// Apple's vivid systemBlue (#007AFF light / #0A84FF dark) — brighter than
+    /// the default macOS accent, matches iOS "What's New" screens.
+    static let sofaBlue = Color(nsColor: .systemBlue)
 }
 
 // MARK: - Root
@@ -51,6 +103,9 @@ struct ContentView: View {
             Group {
                 if !state.welcomeDone && !state.inRoom {
                     WelcomeView()
+                        .transition(.opacity)
+                } else if state.showingSetupCheck && !state.inRoom {
+                    SetupCheckView()
                         .transition(.opacity)
                 } else if state.inRoom {
                     RoomView()
@@ -121,6 +176,8 @@ struct TitleBar: View {
                     UserDefaults.standard.set(false, forKey: "SofaWelcomeDone")
                     AppState.shared.welcomeDone = false
                 }
+                Button("Setup Check…") { state.showingSetupCheck = true }
+                    .disabled(state.inRoom)
                 Divider()
                 Button("Try it solo — Test Zone") { state.enterTestZone() }
                     .disabled(state.inRoom || state.hosting || state.joining)
@@ -147,30 +204,29 @@ struct WelcomeView: View {
     @ObservedObject var state = AppState.shared
 
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "sofa.fill")
-                .font(.system(size: 34, weight: .medium))
-                .foregroundStyle(Color.accentColor.gradient)
+        VStack(alignment: .leading, spacing: 0) {
+            // Big, confident title — Apple's "What's New in …" opener.
             Text("Welcome to Sofa")
-                .font(.system(size: 16, weight: .semibold))
-            Text("Watch movies and shows with friends, perfectly in sync — each of you on your own Mac, with your own accounts.")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+                .font(.system(size: 24, weight: .bold))
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 10)
+                .padding(.bottom, 26)
 
-            VStack(alignment: .leading, spacing: 10) {
+            // Open, airy feature list: no box, big tinted glyphs in their own
+            // column, generous row spacing — invites reading instead of
+            // presenting a wall of text.
+            VStack(alignment: .leading, spacing: 22) {
                 WelcomeRow(icon: "play.circle.fill",
                            title: "Works with what you already use",
-                           text: "QuickTime, VLC, Apple TV, and YouTube, Netflix or Prime Video in Safari and Chrome.")
+                           text: "QuickTime, VLC, Apple TV — or YouTube, Netflix and Prime Video in your browser.")
                 WelcomeRow(icon: "link",
                            title: "One link to watch together",
-                           text: "Start a party, send the invite link — friends click it and playback stays in sync, even in different countries.")
+                           text: "Send the invite, a friend clicks it, and play, pause and skips stay in sync.")
                 WelcomeRow(icon: "hand.raised.fill",
-                           title: "About the permission prompts",
-                           text: "macOS will ask you to allow Sofa to control your video player (that's how sync works) and, for Theater mode, to arrange windows. Sofa never sees or transmits your video or audio.")
+                           title: "Your movie stays private",
+                           text: "macOS will ask permission to control your player — that's how sync works. Sofa never sees your video or audio.")
             }
-            .padding(14)
-            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 8)
 
             Button {
                 state.welcomeDone = true
@@ -181,9 +237,23 @@ struct WelcomeView: View {
                     .padding(.vertical, 5)
             }
             .sofaProminentButton()
+            .buttonBorderShape(.capsule)
             .controlSize(.large)
+            .padding(.top, 30)
+
+            Button {
+                state.welcomeDone = true
+                state.showingSetupCheck = true
+            } label: {
+                Text("Check my Mac’s permissions first")
+                    .font(.system(size: 11))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 10)
         }
-        .padding(.horizontal, 18).padding(.bottom, 14).padding(.top, 4)
+        .padding(.horizontal, 22).padding(.bottom, 16)
     }
 }
 
@@ -193,14 +263,17 @@ struct WelcomeRow: View {
     let text: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .center, spacing: 14) {
             Image(systemName: icon)
-                .font(.system(size: 15))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 22)
+                .font(.system(size: 26))
+                .foregroundStyle(Color.sofaBlue)
+                .frame(width: 36)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 12.5, weight: .semibold))
-                Text(text).font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(text)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -237,7 +310,7 @@ struct IdleView: View {
             VStack(spacing: 4) {
                 Image(systemName: "sofa.fill")
                     .font(.system(size: 32, weight: .medium))
-                    .foregroundStyle(Color.accentColor.gradient)
+                    .foregroundStyle(Color.sofaBlue.gradient)
                 Text("Movie nights, together — apart.")
                     .font(.system(size: 15, weight: .semibold))
                 Text("Play, pause and skip stay perfectly in sync\nwith everyone in your party.")
@@ -290,7 +363,10 @@ struct IdleView: View {
             VStack(spacing: 6) {
                 HStack(spacing: 8) {
                     TextField("Paste an invite link", text: $state.joinAddress)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .padding(.horizontal, 10).padding(.vertical, 7)
+                        .sofaSurface(RoundedRectangle(cornerRadius: 8))
                         .onSubmit {
                             normalizeDisplayName()
                             state.join()
@@ -308,7 +384,7 @@ struct IdleView: View {
                     Text(err).font(.system(size: 11)).foregroundStyle(.red)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Text("Or just click the **sofa://** link your friend sent — Sofa joins by itself.")
+                Text("Or just click the invite link your friend sent — Sofa joins by itself.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -326,9 +402,20 @@ struct AvatarView: View {
 
     private static let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .green]
 
+    /// FNV-1a over UTF-8: Swift's `hashValue` is randomly seeded per process,
+    /// which made every friend's color change on each launch.
+    private static func stableHash(_ value: String) -> UInt64 {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return hash
+    }
+
     var body: some View {
         let letter = String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased()
-        let tint = Self.palette[abs(name.hashValue) % Self.palette.count]
+        let tint = Self.palette[Int(Self.stableHash(name) % UInt64(Self.palette.count))]
         Circle()
             .fill(tint.gradient)
             .frame(width: size, height: size)
@@ -350,6 +437,9 @@ struct RoomView: View {
         // A plain stack rather than a ScrollView: the panel measures this and
         // sizes itself to fit, so it's exactly as tall as the content needs.
         VStack(spacing: 10) {
+            if state.disconnected && state.canRejoin {
+                RejoinCard()
+            }
             if state.isHosting && !state.inviteLink.isEmpty {
                 InviteCard()
             }
@@ -362,6 +452,18 @@ struct RoomView: View {
             }
             LayoutCard()
             AudioCard()
+
+            // Reactions: the one human signal that travels with the sync.
+            HStack(spacing: 4) {
+                ForEach(AppState.reactionEmojis, id: \.self) { emoji in
+                    Button(emoji) { state.sendReaction(emoji) }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 17))
+                        .help("Send a reaction — floats over your friend's screen")
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 3)
 
             Button("Leave Watch Party") {
                 state.leaveRoom()
@@ -392,8 +494,7 @@ struct Card<Content: View>: View {
         VStack(alignment: .leading, spacing: 9) { content }
             .padding(13)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator.opacity(0.35)))
+            .sofaSurface(RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -450,6 +551,9 @@ struct InviteCard: View {
                 .sofaGlassButton()
                 .fixedSize()
                 ShareButton(link: state.inviteLink)
+                    .fixedSize()
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+                    .sofaSurface(Capsule())
             }
 
             Text(state.roomIsOnline
@@ -460,17 +564,38 @@ struct InviteCard: View {
 
             if state.roomIsOnline && !social.friends.isEmpty {
                 Divider().opacity(0.4)
-                HStack {
-                    Text("Invite a saved friend")
-                        .font(.system(size: 10.5)).foregroundStyle(.secondary)
-                    Spacer()
-                    Menu("Invite…") {
+                Text("Invite a saved friend")
+                    .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                // One tap per friend, right here — not buried in a menu.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
                         ForEach(social.friends) { friend in
-                            Button(friend.name) { social.sendInvitation(to: friend) }
+                            let invited = social.invitedFriendIDs.contains(friend.id)
+                            Button {
+                                social.sendInvitation(to: friend)
+                            } label: {
+                                HStack(spacing: 5) {
+                                    AvatarView(name: friend.name, size: 18)
+                                    Text(friend.name)
+                                        .font(.system(size: 11, weight: .medium))
+                                        .lineLimit(1)
+                                    if invited {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .buttonStyle(SofaSecondaryCapsuleButtonStyle())
+                            .disabled(invited)
+                            .opacity(friend.online ? 1 : 0.55)
+                            .help(invited
+                                  ? "\(friend.name) already got tonight's invitation"
+                                  : friend.online
+                                    ? "Invite \(friend.name) — pops up right in their Sofa"
+                                    : "\(friend.name) looks offline — the invite may not arrive")
                         }
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
                 }
             }
         }
@@ -548,7 +673,7 @@ struct IdentityFriendsRow: View {
             // avatar and the Add-a-friend capsule, so the ring of space
             // inside the pill reads even all the way around.
             .padding(.horizontal, 7).padding(.vertical, 6)
-            .background(Color.primary.opacity(0.045), in: Capsule())
+            .sofaSurface(Capsule())
 
             if let error = social.errorMessage {
                 Text(error)
@@ -556,6 +681,33 @@ struct IdentityFriendsRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+}
+
+/// Shown when the connection died for good and a saved invite can retry it.
+struct RejoinCard: View {
+    @ObservedObject var state = AppState.shared
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.system(size: 17))
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Connection lost")
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text("The party may still be running — try hopping back in.")
+                    .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 4)
+            Button("Rejoin") { state.rejoinLastParty() }
+                .sofaProminentButton()
+                .disabled(state.joining || state.hosting)
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Color.orange.opacity(0.25)))
     }
 }
 
@@ -581,8 +733,8 @@ struct PartyInvitationCard: View {
                 .disabled(state.inRoom || state.hosting || state.joining)
         }
         .padding(10)
-        .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
-        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Color.accentColor.opacity(0.25)))
+        .background(Color.sofaBlue.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Color.sofaBlue.opacity(0.25)))
     }
 }
 
@@ -592,7 +744,10 @@ struct ShareButton: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSButton {
         let button = NSButton(title: "Share…", target: context.coordinator, action: #selector(Coordinator.share(_:)))
-        button.bezelStyle = .rounded
+        // Chrome comes from the SwiftUI capsule wrapper at the call site;
+        // the AppKit button itself stays bare.
+        button.isBordered = false
+        button.font = .systemFont(ofSize: 12)
         context.coordinator.link = link
         return button
     }
@@ -644,6 +799,34 @@ struct PlayerCard: View {
                 ) { }
             }
 
+            // Live sync confidence: green when aligned, one-tap fix when not.
+            if state.friendMatchesLocalMedia {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    SyncStatusChip(now: context.date)
+                }
+            }
+
+            // Resume where the last party with this title left off.
+            if let saved = state.resumeCandidate {
+                Button { state.resumeLastSession() } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "memories")
+                            .foregroundStyle(Color.sofaBlue)
+                        Text("Resume at \(PlayerCard.fmt(saved.time)) — where you left off")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.right.circle.fill")
+                            .foregroundStyle(Color.sofaBlue)
+                    }
+                    .padding(.vertical, 5).padding(.horizontal, 7)
+                    .background(Color.sofaBlue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Seeks both you and your friend to the saved position")
+            }
+
             // What the other side is watching, straight from their broadcast.
             if let friendTitle = state.friendNowPlaying, !state.friendMatchesLocalMedia {
                 Divider().opacity(0.4)
@@ -674,10 +857,10 @@ struct PlayerCard: View {
                         }
                         Spacer(minLength: 0)
                         Image(systemName: "arrow.right.circle.fill")
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(Color.sofaBlue)
                     }
                     .padding(.vertical, 5).padding(.horizontal, 7)
-                    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.sofaBlue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -698,18 +881,29 @@ struct PlayerCard: View {
             }
 
             // Escape hatch: pick an app that isn't open yet, or Sofa's own player.
-            Menu {
-                ForEach(PlayerChoice.externalPlayers) { p in
-                    Button(p.shortLabel) { state.selectPlayer(p) }
+            HStack {
+                Menu {
+                    ForEach(PlayerChoice.externalPlayers) { p in
+                        Button(p.shortLabel) { state.selectPlayer(p) }
+                    }
+                    Divider()
+                    Button("Sofa’s built-in player") { state.selectPlayer(.builtin) }
+                } label: {
+                    Text("Choose another player…")
+                        .font(.system(size: 11))
                 }
-                Divider()
-                Button("Sofa’s built-in player") { state.selectPlayer(.builtin) }
-            } label: {
-                Text("Choose another player…")
-                    .font(.system(size: 11))
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+
+                Spacer()
+
+                Toggle("Auto-pause if a friend drops", isOn: $state.autoPauseEnabled)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.mini)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .help("Pauses your movie when a friend loses connection, so nobody runs ahead")
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
             .padding(.top, 2)
 
             // Setup hint + detailed live status for the selected external player.
@@ -762,6 +956,53 @@ struct PlayerCard: View {
         let s = max(0, Int(t))
         let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec) : String(format: "%d:%02d", m, sec)
+    }
+}
+
+/// Live drift indicator: the whole promise of Sofa, made visible. Green when
+/// aligned with the friend's clock, amber with a one-tap "Match" fix when not.
+struct SyncStatusChip: View {
+    /// The TimelineView tick — unused directly, but a changing property is
+    /// what makes SwiftUI re-evaluate this body every second.
+    let now: Date
+    @ObservedObject var state = AppState.shared
+
+    private var localTime: Double? {
+        if state.playerChoice == .builtin {
+            let seconds = state.builtin.player.currentTime().seconds
+            return seconds.isFinite ? seconds : nil
+        }
+        if case .playing(let time, _) = state.extLive { return time }
+        return nil
+    }
+
+    var body: some View {
+        if let local = localTime, let friend = state.estimatedFriendPlaybackTime {
+            let drift = local - friend
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(abs(drift) <= 3 ? Color.green : Color.orange)
+                    .frame(width: 7, height: 7)
+                Text(label(for: drift))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Spacer(minLength: 0)
+                if abs(drift) > 3 {
+                    Button("Match") { state.matchFriendTime() }
+                        .sofaGlassButton()
+                        .font(.system(size: 10.5))
+                        .fixedSize()
+                        .help("Jump to your friend's exact position")
+                }
+            }
+        }
+    }
+
+    private func label(for drift: Double) -> String {
+        if abs(drift) <= 3 { return "In sync with your friend" }
+        let seconds = Int(abs(drift).rounded())
+        return drift > 0 ? "You're \(seconds)s ahead" : "You're \(seconds)s behind"
     }
 }
 
@@ -914,12 +1155,12 @@ struct SourceRow: View {
                 Spacer(minLength: 4)
                 if selected {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(Color.sofaBlue)
                 }
             }
             .padding(.vertical, 5).padding(.horizontal, 7)
             .background(
-                selected ? Color.accentColor.opacity(0.14) : Color.clear,
+                selected ? Color.sofaBlue.opacity(0.14) : Color.clear,
                 in: RoundedRectangle(cornerRadius: 8)
             )
             .contentShape(Rectangle())
@@ -1118,21 +1359,21 @@ struct LayoutCard: View {
 
     private var subline: String {
         if state.theaterTransitioning {
-            return "Keeping the fullscreen you opened and placing the call beside the video."
+            return "Keeping your fullscreen and placing the call beside the video."
         }
         if state.theaterActive {
-            return "Drag the edge between the video and black column to resize it. Exit Theater keeps the fullscreen opened with F."
+            return "Drag the edge between video and call to resize. Exiting keeps your fullscreen."
         }
         if !state.playerChoice.isBrowser {
-            return "Choose Safari or Chrome, open YouTube or Netflix, and put the video in full screen."
+            return "Choose Safari or Chrome and put a video in full screen."
         }
         if !state.browserPageFullscreenReady {
-            return "In the video, press F (or its fullscreen button). Then open Sofa again — Theater will become available."
+            return "Press F in the video (or its fullscreen button), then open Sofa again."
         }
         if fakeCall.visible {
-            return "Keeps that exact fullscreen, reserves the right side, and floats a compact call there."
+            return "Keeps your fullscreen and floats the call on the right."
         }
-        return "Fullscreen is ready. Show the test call window if you want it on the right, then enter Theater."
+        return "Fullscreen ready — Theater reserves the right side for your call."
     }
 }
 
@@ -1141,7 +1382,7 @@ struct TheaterDiagram: View {
     var body: some View {
         HStack(spacing: 2) {
             RoundedRectangle(cornerRadius: 2)
-                .fill(Color.accentColor.opacity(0.8))
+                .fill(Color.sofaBlue.opacity(0.8))
                 .frame(width: 30, height: 26)
             RoundedRectangle(cornerRadius: 2)
                 .fill(Color.white.opacity(0.35))
@@ -1172,8 +1413,8 @@ struct AudioCard: View {
                 SystemVolume.set(Int(v))
             }
             Text(state.detectedCallApp?.bundleID == "com.apple.FaceTime"
-                 ? "Call changes only FaceTime. Audio is processed locally and is never saved or sent."
-                 : "Start a FaceTime call to control its volume independently from the movie.")
+                 ? "Call adjusts only FaceTime — processed locally, never recorded or sent."
+                 : "Start a FaceTime call to control its volume separately.")
                 .font(.system(size: 11)).foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1195,6 +1436,7 @@ struct SliderRow: View {
                 onChange(value)
             }
             .onChange(of: value) { _, v in onChange(v) }
+            .tint(Color.sofaBlue)
             Text("\(Int(value))\(suffix)")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .monospacedDigit()

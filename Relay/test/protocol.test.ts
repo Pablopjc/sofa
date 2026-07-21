@@ -20,6 +20,18 @@ describe("relay protocol", () => {
     });
   });
 
+  it("accepts reactions with an emoji name and nothing else", () => {
+    expect(parseClientFrame('{"type":"react","name":"🍿"}').ok).toBe(true);
+    expect(parseClientFrame('{"type":"react"}')).toEqual({
+      ok: false,
+      reason: "missing_required_field",
+    });
+    expect(parseClientFrame('{"type":"react","name":"🍿","time":3}')).toEqual({
+      ok: false,
+      reason: "field_not_allowed",
+    });
+  });
+
   it("validates the documented fields and finite playback values", () => {
     expect(parseClientFrame('{"type":"tick","time":null}')).toEqual({
       ok: false,

@@ -177,6 +177,23 @@ describe("relay worker", () => {
     expect(first.expiresAt).toBeGreaterThan(Date.now());
   });
 
+  it("serves a self-contained invite page without ever seeing the secret", async () => {
+    const page = await SELF.fetch("https://relay.test/j/ABCDEF");
+    expect(page.status).toBe(200);
+    expect(page.headers.get("Content-Type")).toContain("text/html");
+    expect(page.headers.get("Cache-Control")).toBe("no-store");
+    const html = await page.text();
+    expect(html).toContain("ABCDEF");
+    expect(html).toContain("sofa://join/v1/ABCDEF/");
+    expect(html).toContain("github.com/Pablopjc/sofa/releases/latest");
+
+    // Lowercase room ids canonicalize; malformed ones 404 as JSON.
+    expect((await SELF.fetch("https://relay.test/j/abcdef")).status).toBe(200);
+    const bad = await SELF.fetch("https://relay.test/j/IO01!!");
+    expect(bad.status).toBe(404);
+    expect(await bad.json()).toEqual({ error: "invalid_room_id" });
+  });
+
   it("requires the native-client headers and an empty bounded JSON body", async () => {
     const missingClient = await requestRoom({ clientID: null });
     expect(missingClient.status).toBe(400);
