@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.59-disney2";
-  const EVENT_NAME = "sofa-theater-command-0.1.59-disney2";
+  const VERSION = "0.1.60-disney3";
+  const EVENT_NAME = "sofa-theater-command-0.1.60-disney3";
   const READY_ATTR = "data-sofa-theater-helper";
   const COMMAND_ATTR = "data-sofa-theater-command";
   const STATUS_ATTR = "data-sofa-theater-status";
@@ -240,6 +240,13 @@
       // suspenders cap on the video guards against it keeping its old width.
       if (!hasReservation()) return "";
       return `${interactionCSS}
+        html[${ACTIVE_ATTR}], html[${ACTIVE_ATTR}] body,
+        html[${ACTIVE_ATTR}] #app_body_content,
+        html[${ACTIVE_ATTR}] .video_view--theater,
+        html[${ACTIVE_ATTR}] .hudson-container,
+        html[${ACTIVE_ATTR}] .player-container-root {
+          background: #000 !important;
+        }
         [${DISNEY_ATTR}] {
           left: 0 !important;
           width: ${width} !important;
