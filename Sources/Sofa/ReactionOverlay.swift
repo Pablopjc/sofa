@@ -29,7 +29,7 @@ final class ReactionOverlay {
         content.addSubview(label)
         activeCount += 1
 
-        let travel = content.bounds.height * CGFloat.random(in: 0.55...0.9)
+        let travel = content.bounds.height * CGFloat.random(in: 0.35...0.6)
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 2.4
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -51,14 +51,16 @@ final class ReactionOverlay {
 
     private func ensurePanel() -> NSPanel {
         // Follow the screen where the action is: the one with the key window,
-        // falling back to the main screen.
+        // falling back to the main screen. Anchored to the raw screen edge
+        // (not visibleFrame) so reactions rise from the very bottom, behind
+        // the Dock if there is one — like iMessage effects.
         let screen = NSScreen.main ?? NSScreen.screens[0]
         let width: CGFloat = 420
         let frame = NSRect(
-            x: screen.visibleFrame.maxX - width,
-            y: screen.visibleFrame.minY,
+            x: screen.frame.maxX - width,
+            y: screen.frame.minY,
             width: width,
-            height: screen.visibleFrame.height * 0.8
+            height: screen.frame.height
         )
 
         if let panel {
