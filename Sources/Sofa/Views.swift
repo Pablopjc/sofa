@@ -121,17 +121,6 @@ struct ContentView: View {
         // No minHeight: the panel measures this view and sizes itself to fit,
         // so there's never a slab of empty glass under the content.
         .frame(width: 380)
-        .overlay(alignment: .bottom) {
-            if let toast = state.toast {
-                Text(toast)
-                    .font(.system(size: 12))
-                    .padding(.horizontal, 14).padding(.vertical, 8)
-                    .sofaGlassSurface(cornerRadius: 10)
-                    .padding(.bottom, 14)
-                    .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.2), value: state.toast)
     }
 }
 
@@ -146,7 +135,23 @@ struct TitleBar: View {
                 .foregroundStyle(.secondary)
             Text("Sofa").font(.system(size: 13, weight: .semibold))
 
-            if state.inRoom {
+            // One status capsule: transient messages take it over briefly,
+            // then it falls back to the room status — nothing covers the UI.
+            if let toast = state.toast {
+                HStack(spacing: 5) {
+                    Image(systemName: "info.circle.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.sofaBlue)
+                    Text(toast)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Color.sofaBlue.opacity(0.12), in: Capsule())
+                .transition(.opacity)
+            } else if state.inRoom {
                 HStack(spacing: 5) {
                     Circle()
                         .fill(state.disconnected ? Color.red : Color.green)
@@ -158,6 +163,7 @@ struct TitleBar: View {
                 }
                 .padding(.horizontal, 8).padding(.vertical, 3)
                 .background(Color.primary.opacity(0.06), in: Capsule())
+                .transition(.opacity)
             }
 
             Spacer()
@@ -193,6 +199,7 @@ struct TitleBar: View {
             .help("Sofa options")
         }
         .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 8)
+        .animation(.easeInOut(duration: 0.2), value: state.toast)
     }
 }
 
@@ -461,6 +468,8 @@ struct RoomView: View {
                         .font(.system(size: 17))
                         .help("Send a reaction — floats over your friend's screen")
                 }
+                EmojiPickerButton { emoji in state.sendReaction(emoji) }
+                    .fixedSize()
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 3)
@@ -1432,15 +1441,45 @@ struct SliderRow: View {
         HStack(spacing: 10) {
             Text(label).font(.system(size: 12)).foregroundStyle(.secondary)
                 .frame(width: 44, alignment: .leading)
-            Slider(value: $value, in: range) { _ in
-                onChange(value)
-            }
-            .onChange(of: value) { _, v in onChange(v) }
-            .tint(Color.sofaBlue)
+            CapsuleSlider(value: $value, range: range, onChange: onChange)
+                .frame(height: 22)
             Text("\(Int(value))\(suffix)")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .monospacedDigit()
                 .frame(width: 38, alignment: .trailing)
+        }
+    }
+}
+
+/// Control Center-style slider: a thick capsule track whose white fill IS the
+/// value — no thumb knob — like the system Display/Sound sliders.
+struct CapsuleSlider: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let onChange: (Double) -> Void
+
+    var body: some View {
+        GeometryReader { geo in
+            let span = range.upperBound - range.lowerBound
+            let fraction = span > 0 ? CGFloat((value - range.lowerBound) / span) : 0
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.sofaSurface)
+                Capsule()
+                    .fill(.white)
+                    .frame(width: max(geo.size.height, fraction * geo.size.width))
+                    .shadow(color: .black.opacity(0.18), radius: 1.5, y: 0.5)
+            }
+            .overlay(Capsule().strokeBorder(Color.sofaSurfaceStroke, lineWidth: 1))
+            .contentShape(Capsule())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        let f = min(1, max(0, gesture.location.x / max(1, geo.size.width)))
+                        let next = range.lowerBound + Double(f) * span
+                        value = next
+                        onChange(next)
+                    }
+            )
         }
     }
 }

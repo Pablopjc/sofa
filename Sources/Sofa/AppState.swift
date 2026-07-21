@@ -743,17 +743,25 @@ final class AppState: ObservableObject {
         join(target: raw)
     }
 
+    /// A reaction is renderable when it's one of our buttons or any single
+    /// emoji grapheme (the + picker allows the whole palette). This is drawn
+    /// over the whole screen, so plain text must never pass.
+    static func isAllowedReaction(_ candidate: String) -> Bool {
+        if reactionEmojis.contains(candidate) { return true }
+        guard candidate.count == 1, let first = candidate.unicodeScalars.first else { return false }
+        return first.properties.isEmojiPresentation
+            || candidate.unicodeScalars.contains { $0.value == 0xFE0F } // emoji variation selector
+            || first.value >= 0x1F300 // symbols & pictographs planes
+    }
+
     func sendReaction(_ emoji: String) {
-        guard inRoom else { return }
+        guard inRoom, Self.isAllowedReaction(emoji) else { return }
         sync.send(SyncMessage(type: "react", name: emoji))
         ReactionOverlay.shared.show(emoji)
     }
 
     func showRemoteReaction(_ emoji: String) {
-        // Strict whitelist: this draws over the whole screen (including the
-        // fullscreen movie), and the relay allows any ≤256-char string in
-        // `name` — so render nothing that isn't one of our own buttons.
-        guard inRoom, Self.reactionEmojis.contains(emoji) else { return }
+        guard inRoom, Self.isAllowedReaction(emoji) else { return }
         ReactionOverlay.shared.show(emoji)
     }
 

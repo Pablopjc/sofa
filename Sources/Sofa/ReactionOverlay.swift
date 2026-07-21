@@ -1,4 +1,57 @@
 import AppKit
+import SwiftUI
+
+/// "+" button that opens the system emoji palette. Picks land in a hidden
+/// text field parked offscreen inside the panel; each one is forwarded as a
+/// reaction and the field is cleared. Built on AppKit (no SwiftUI @State,
+/// whose macro plugin isn't in the command-line toolchain).
+struct EmojiPickerButton: NSViewRepresentable {
+    let onPick: (String) -> Void
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(
+            title: "", target: context.coordinator, action: #selector(Coordinator.open(_:))
+        )
+        button.image = NSImage(
+            systemSymbolName: "plus.circle", accessibilityDescription: "More reactions"
+        )
+        button.isBordered = false
+        button.toolTip = "Pick any emoji"
+        context.coordinator.onPick = onPick
+        return button
+    }
+
+    func updateNSView(_ nsView: NSButton, context: Context) {
+        context.coordinator.onPick = onPick
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var onPick: ((String) -> Void)?
+        private let catcher = NSTextField()
+
+        @objc func open(_ sender: NSButton) {
+            guard let window = sender.window else { return }
+            if catcher.superview == nil {
+                catcher.frame = NSRect(x: -200, y: -200, width: 60, height: 22)
+                catcher.delegate = self
+                window.contentView?.addSubview(catcher)
+            }
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeFirstResponder(catcher)
+            NSApp.orderFrontCharacterPalette(catcher)
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            let text = catcher.stringValue
+            guard let emoji = text.last.map(String.init) else { return }
+            catcher.stringValue = ""
+            onPick?(emoji)
+        }
+    }
+}
 
 /// Floating emoji reactions, drawn over everything — including the fullscreen
 /// video Space — in a transparent, click-through panel. Each reaction drifts
