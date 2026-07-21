@@ -84,6 +84,24 @@ extension Color {
     /// Apple's vivid systemBlue (#007AFF light / #0A84FF dark) — brighter than
     /// the default macOS accent, matches iOS "What's New" screens.
     static let sofaBlue = Color(nsColor: .systemBlue)
+
+    /// Shared "needs attention / drifting" amber (was raw .orange, repeated).
+    static let sofaAmber = Color(nsColor: .systemOrange)
+}
+
+/// Source rows: pointing-hand cursor, a hover fill, and a press dim — the
+/// affordances a Mac user expects on a custom clickable row.
+struct SourceRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.6 : 1)
+            .contentShape(Rectangle())
+            // .set() (not push/pop): a teardown-while-hovered can't unbalance a
+            // cursor stack, and the next mouse move corrects it.
+            .onHover { inside in
+                if inside { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
+            }
+    }
 }
 
 // MARK: - Root
@@ -103,7 +121,9 @@ struct ContentView: View {
                 if !state.welcomeDone && !state.inRoom {
                     WelcomeView()
                         .transition(.opacity)
-                } else if state.showingSetupCheck && !state.inRoom {
+                } else if state.showingSetupCheck {
+                    // Reachable even mid-party: a browser can get blocked while
+                    // you're in a room, which is exactly when you need this.
                     SetupCheckView()
                         .transition(.opacity)
                 } else if state.inRoom {
@@ -116,6 +136,7 @@ struct ContentView: View {
             }
             .animation(.spring(duration: 0.35), value: state.inRoom)
             .animation(.spring(duration: 0.35), value: state.welcomeDone)
+            .animation(.spring(duration: 0.3), value: state.showingSetupCheck)
         }
         // No minHeight: the panel measures this view and sizes itself to fit,
         // so there's never a slab of empty glass under the content.
@@ -183,7 +204,6 @@ struct TitleBar: View {
                     AppState.shared.welcomeDone = false
                 }
                 Button("Setup Check…") { state.showingSetupCheck = true }
-                    .disabled(state.inRoom)
                 Divider()
                 Button("Try it solo — Test Zone") { state.enterTestZone() }
                     .disabled(state.inRoom || state.hosting || state.joining)
@@ -1023,20 +1043,43 @@ struct ShareButton: NSViewRepresentable {
 struct PlayerCard: View {
     @ObservedObject var state = AppState.shared
 
+    /// Sources with the active one first, so the row you care about leads.
+    private var orderedSources: [PlayerChoice] {
+        state.detectedSources.sorted { a, _ in a == state.playerChoice }
+    }
+
+    private var selectedNeedsSetup: Bool {
+        if case .blocked = state.extLive { return true }
+        if case .notAuthorized = state.extLive { return true }
+        return false
+    }
+
     var body: some View {
         Card {
             SectionLabel(text: "Play from")
 
-            // Active sources detected right now (like Control Center's Now Playing).
-            ForEach(state.detectedSources) { player in
+            // Watch-together CTA: what the friend is watching, made prominent.
+            if let friendTitle = state.friendNowPlaying, !state.friendMatchesLocalMedia {
+                watchTogether(friendTitle: friendTitle)
+            }
+
+            // Detected sources, active one first.
+            ForEach(orderedSources) { player in
+                let isSel = state.playerChoice == player
                 SourceRow(
                     player: player,
-                    selected: state.playerChoice == player,
-                    live: state.playerChoice == player ? state.extLive : nil,
-                    title: state.playerChoice == player ? state.nowPlaying : nil,
-                    poster: state.playerChoice == player ? state.nowPlayingPoster : nil,
-                    together: state.playerChoice == player && state.friendMatchesLocalMedia
+                    selected: isSel,
+                    live: isSel ? state.extLive : nil,
+                    title: isSel ? state.nowPlaying : nil,
+                    poster: isSel ? state.nowPlayingPoster : nil,
+                    together: isSel && state.friendMatchesLocalMedia,
+                    service: isSel ? StreamingService.from(urlString: state.nowPlayingURL) : nil
                 ) { state.selectPlayer(player) }
+
+                // The one, real setup fix — only under the blocked active row.
+                if isSel && selectedNeedsSetup {
+                    PlayerSetupBanner(player: player, live: state.extLive)
+                }
             }
 
             // Live sync confidence: green when aligned, one-tap fix when not.
@@ -1067,124 +1110,121 @@ struct PlayerCard: View {
                 .help("Seeks both you and your friend to the saved position")
             }
 
-            // What the other side is watching, straight from their broadcast.
-            if let friendTitle = state.friendNowPlaying, !state.friendMatchesLocalMedia {
-                Divider().opacity(0.4)
-                Button { state.joinFriendPlayback() } label: {
-                    HStack(spacing: 8) {
-                        RemoteImage(
-                            urlString: state.friendNowPlayingArt,
-                            fallback: NSImage(systemSymbolName: "sofa.fill", accessibilityDescription: nil)
-                        )
-                        .frame(width: 28, height: 28)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(friendTitle)
-                                .font(.system(size: 12.5, weight: .medium))
-                                .lineLimit(1).truncationMode(.tail)
-                            if state.friendIsPlaying == true {
-                                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                                    Text(friendPlaybackText)
-                                        .font(.system(size: 10.5))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            } else {
-                                Text(friendPlaybackText)
-                                    .font(.system(size: 10.5))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                        Spacer(minLength: 0)
-                        Image(systemName: "arrow.right.circle.fill")
-                            .foregroundStyle(Color.sofaBlue)
-                    }
-                    .padding(.vertical, 5).padding(.horizontal, 7)
-                    .background(Color.sofaBlue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-
             if state.detectedSources.isEmpty {
-                Text("Open a movie in QuickTime, VLC, Apple TV or your browser (YouTube, Netflix, Prime Video…) and it’ll show up here.")
-                    .font(.system(size: 11)).foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 2)
+                emptyState
             }
 
             if let notice = state.unsupportedNotice {
                 Text(notice)
                     .font(.system(size: 11))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.sofaAmber)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 2)
             }
 
-            // Escape hatch: pick an app that isn't open yet.
-            HStack {
-                Menu {
-                    ForEach(PlayerChoice.externalPlayers) { p in
-                        Button(p.shortLabel) { state.selectPlayer(p) }
-                    }
-                } label: {
-                    Text("Choose another player…")
-                        .font(.system(size: 11))
+            // "+ Another app" reads as more sources, not a settings control.
+            Menu {
+                ForEach(PlayerChoice.externalPlayers) { p in
+                    Button(p.shortLabel) { state.selectPlayer(p) }
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-
-                Spacer()
-
-                Toggle("Auto-pause if a friend drops", isOn: $state.autoPauseEnabled)
-                    .toggleStyle(.checkbox)
-                    .controlSize(.mini)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .help("Pauses your movie when a friend loses connection, so nobody runs ahead")
+            } label: {
+                Label("Another app…", systemImage: "plus")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            .padding(.top, 2)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .padding(.top, 1)
 
-            // Setup hint + detailed live status for the selected player.
-            Divider().opacity(0.4)
-            Text(state.playerChoice.hint)
-                .font(.system(size: 11)).foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-            if liveIsWarning {
-                Text(liveText)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.orange)
+            // One "how to play" line — never the permission instructions (those
+            // live only in the banner now), and gone once it's actually playing.
+            if !selectedNeedsSetup, !isPlaying {
+                Divider().opacity(0.4)
+                Text(state.playerChoice.hint)
+                    .font(.system(size: 11)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Divider().opacity(0.4)
+            // Hidden label + a little gap, so the checkbox isn't crammed against
+            // the text; tapping the text still toggles it.
+            HStack(spacing: 7) {
+                Toggle("", isOn: $state.autoPauseEnabled)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                    .labelsHidden()
+                Text("Auto-pause if a friend drops")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .onTapGesture { state.autoPauseEnabled.toggle() }
+                Spacer(minLength: 0)
+            }
+            .help("Pauses your movie when a friend loses connection, so nobody runs ahead")
         }
     }
 
-    private var liveText: String {
-        switch state.extLive {
-        case .searching:
-            return "Looking for something playing…"
-        case .nothingOpen:
-            return "Nothing open yet — start your video and it appears here."
-        case .blocked(let browser):
-            return browser == .safari
-                ? "⚠️ Safari is blocking Sofa. Enable: Safari Settings → Advanced → “Show features for web developers”, then Developer tab → “Allow JavaScript from Apple Events”."
-                : "⚠️ Chrome is blocking Sofa. Enable: View → Developer → Allow JavaScript from Apple Events."
-        case .notAuthorized:
-            return "⚠️ macOS denied automation. Fix it in System Settings → Privacy & Security → Automation → Sofa."
-        case .playing(let time, let isPlaying):
-            return "\(isPlaying ? "▶" : "⏸")  \(Self.fmt(time)) · \(isPlaying ? "playing" : "paused") — synced"
+    private var isPlaying: Bool {
+        if case .playing = state.extLive { return true }
+        return false
+    }
+
+    @ViewBuilder private func watchTogether(friendTitle: String) -> some View {
+        Button { state.joinFriendPlayback() } label: {
+            HStack(spacing: 8) {
+                RemoteImage(
+                    urlString: state.friendNowPlayingArt,
+                    fallback: NSImage(systemSymbolName: "play.tv.fill", accessibilityDescription: nil)
+                )
+                .frame(width: 40, height: 26)
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Watch “\(friendTitle)” together")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1).truncationMode(.tail)
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        Text(friendPlaybackText)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.right.circle.fill")
+                    .foregroundStyle(.white)
+            }
+            .padding(.vertical, 7).padding(.horizontal, 9)
+            // A slightly deeper blue so white text clears WCAG AA contrast.
+            .background(
+                Color(nsColor: NSColor.systemBlue.blended(withFraction: 0.18, of: .black) ?? .systemBlue),
+                in: RoundedRectangle(cornerRadius: 10)
+            )
+            .contentShape(Rectangle())
         }
+        .buttonStyle(SourceRowButtonStyle())
+        .help("Open what your friend is watching and jump to their time")
+    }
+
+    @ViewBuilder private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Open a movie and it shows up here — YouTube/Netflix in your browser, or QuickTime, VLC, Apple TV.")
+                .font(.system(size: 11)).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Button("Open Safari") { state.openPlayer(.safari) }
+                    .buttonStyle(SofaSecondaryCapsuleButtonStyle())
+                Button("Open QuickTime") { state.openPlayer(.quicktime) }
+                    .buttonStyle(SofaSecondaryCapsuleButtonStyle())
+            }
+            .font(.system(size: 11))
+        }
+        .padding(.top, 2)
     }
 
     private var friendPlaybackText: String {
         let time = state.estimatedFriendPlaybackTime.map(Self.fmt) ?? "--:--"
         let status = state.friendIsPlaying == true ? "▶" : "⏸"
         return "Your friend · \(status) \(time) · tap to watch together"
-    }
-
-    private var liveIsWarning: Bool {
-        if case .blocked = state.extLive { return true }
-        if case .notAuthorized = state.extLive { return true }
-        return false
     }
 
     static func fmt(_ t: Double) -> String {
@@ -1344,7 +1384,110 @@ enum RemoteImageCache {
     }()
 }
 
-/// A selectable source row: app icon + name + status, like Control Center.
+/// The real fix for a blocked/unauthorized player: numbered steps plus buttons
+/// that actually open the setting — not just another orange sentence. Branches
+/// by state because a browser JS toggle and a macOS Automation grant are
+/// completely different fixes.
+struct PlayerSetupBanner: View {
+    let player: PlayerChoice
+    let live: ExtLiveState
+    @ObservedObject var state = AppState.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: icon)
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.sofaAmber)
+                Text(headline)
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            ForEach(Array(steps.enumerated()), id: \.offset) { i, step in
+                HStack(alignment: .top, spacing: 6) {
+                    Text("\(i + 1)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 14, height: 14)
+                        .background(Circle().fill(Color.sofaAmber))
+                    Text(step)
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            HStack(spacing: 7) {
+                Button(primaryTitle) { primaryAction() }
+                    .buttonStyle(SofaSecondaryCapsuleButtonStyle())
+                    .lineLimit(1).fixedSize()
+                Button("Re-check") { PlayerBridge.shared.wakePolling() }
+                    .sofaProminentButton()
+                    .lineLimit(1).fixedSize()
+                Spacer(minLength: 4)
+                Button("Full setup…") { state.showingSetupCheck = true }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Color.sofaBlue)
+                    .lineLimit(1).fixedSize()
+            }
+        }
+        .padding(10)
+        .background(Color.sofaAmber.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.sofaAmber.opacity(0.25)))
+    }
+
+    private var isBlocked: Bool { if case .blocked = live { return true }; return false }
+
+    private var icon: String { "exclamationmark.triangle.fill" }
+
+    /// Short browser name so buttons don't truncate ("Chrome", not "Google Chrome").
+    private var shortName: String {
+        player == .chrome ? "Chrome" : player.shortLabel
+    }
+
+    private var headline: String {
+        isBlocked
+            ? "Let Sofa control \(shortName)'s video"
+            : "Allow Sofa to automate \(shortName)"
+    }
+
+    private var steps: [String] {
+        if isBlocked {
+            if player == .safari {
+                return [
+                    "Safari → Settings → Advanced → turn on “Show features for web developers”.",
+                    "In the new Develop menu, enable “Allow JavaScript from Apple Events”.",
+                    "Keep the video tab in front.",
+                ]
+            }
+            return [
+                "In Chrome’s menu bar: View → Developer → Allow JavaScript from Apple Events.",
+                "Keep the video tab in front.",
+            ]
+        }
+        return [
+            "Open System Settings → Privacy & Security → Automation.",
+            "Under Sofa, turn on \(player.shortLabel).",
+        ]
+    }
+
+    private var primaryTitle: String {
+        isBlocked ? "Open \(shortName)" : "Open Settings"
+    }
+
+    private func primaryAction() {
+        if isBlocked {
+            state.openPlayer(player)
+        } else if let bundleID = player.bundleID {
+            // Ask directly if consent was never requested; otherwise the toggle
+            // only lives in Settings.
+            SetupCheck.shared.askAutomation(bundleID: bundleID)
+            SetupCheck.shared.openSettings(anchor: "Privacy_Automation")
+        }
+    }
+}
+
+/// A selectable source row: content preview + name + live status, like
+/// Control Center. The selected/active row shows full detail; other running
+/// apps render quietly (dimmer, one line) so the active one is obvious.
 struct SourceRow: View {
     let player: PlayerChoice
     let selected: Bool
@@ -1355,49 +1498,99 @@ struct SourceRow: View {
     var poster: String?
     /// The remote peer reported this same canonical content URL.
     var together = false
+    /// A recognizable streaming service (YouTube, Netflix…) for the active row.
+    var service: StreamingService?
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                // Content preview like Control Center, falling back to the app icon.
-                RemoteImage(urlString: poster, fallback: fallbackImage)
-                    .frame(width: 28, height: 28)
+                // Landscape content preview like Control Center for a real
+                // poster; otherwise the app's own icon (rendered directly in
+                // SwiftUI — the AppKit artwork view won't draw a fallback icon).
+                Group {
+                    if let poster, !poster.isEmpty {
+                        RemoteImage(urlString: poster, fallback: fallbackImage)
+                    } else if let icon = player.appIcon {
+                        Image(nsImage: icon).resizable().aspectRatio(contentMode: .fit)
+                    } else {
+                        Image(systemName: "play.rectangle.fill")
+                            .resizable().aspectRatio(contentMode: .fit)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: (selected && poster != nil) ? 40 : 26, height: 26)
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+                .overlay(alignment: .bottomLeading) {
+                    if selected, let service {
+                        Text(service.monogram)
+                            .font(.system(size: 8, weight: .heavy))
+                            .padding(.horizontal, 2)
+                            .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 3))
+                            .foregroundStyle(.white)
+                            .padding(1)
+                    }
+                }
+
                 VStack(alignment: .leading, spacing: 1) {
-                    // Now Playing style: the title leads, the app is metadata.
-                    if let title, !title.isEmpty {
+                    if selected, let title, !title.isEmpty {
+                        // Active + known title: Now-Playing style.
                         Text(title)
                             .font(.system(size: 12.5, weight: .medium))
                             .foregroundStyle(.primary)
                             .lineLimit(1).truncationMode(.tail)
-                        Text("\(player.shortLabel) · \(statusText)")
+                        Text("\(sourceName) · \(statusText)")
                             .font(.system(size: 10.5))
-                            .foregroundStyle(statusIsWarning ? .orange : .secondary)
+                            .foregroundStyle(statusColor)
                             .lineLimit(1)
                     } else {
-                        Text(player.shortLabel)
-                            .font(.system(size: 12.5, weight: .medium))
-                            .foregroundStyle(.primary)
+                        Text(sourceName)
+                            .font(.system(size: selected ? 12.5 : 12, weight: selected ? .medium : .regular))
+                            .foregroundStyle(selected ? .primary : .secondary)
                         Text(statusText)
                             .font(.system(size: 10.5))
-                            .foregroundStyle(statusIsWarning ? .orange : .secondary)
+                            .foregroundStyle(statusColor)
                             .lineLimit(1)
                     }
                 }
                 Spacer(minLength: 4)
-                if selected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Color.sofaBlue)
-                }
+                statusDot
             }
-            .padding(.vertical, 5).padding(.horizontal, 7)
+            .padding(.vertical, selected ? 5 : 3).padding(.horizontal, 7)
             .background(
                 selected ? Color.sofaBlue.opacity(0.14) : Color.clear,
                 in: RoundedRectangle(cornerRadius: 8)
             )
-            .contentShape(Rectangle())
+            .opacity(selected ? 1 : 0.72)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SourceRowButtonStyle())
+    }
+
+    /// Streaming service name for the active browser row, else the app name.
+    private var sourceName: String {
+        if selected, let service { return service.name }
+        return player.shortLabel
+    }
+
+    /// A leading status dot: green playing, amber needs-setup, grey idle.
+    @ViewBuilder private var statusDot: some View {
+        if selected, case .playing = live {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.sofaBlue)
+        } else {
+            Circle().fill(dotColor).frame(width: 7, height: 7)
+        }
+    }
+
+    private var dotColor: Color {
+        switch live {
+        case .playing: return .green
+        case .blocked, .notAuthorized: return .sofaAmber
+        default: return .secondary
+        }
+    }
+
+    private var statusColor: Color {
+        statusIsWarning ? .sofaAmber : .secondary
     }
 
     /// The app icon (or a symbol) shown when there's no content preview.
@@ -1411,14 +1604,14 @@ struct SourceRow: View {
             switch live {
             case .searching: return "Connecting…"
             case .nothingOpen: return "Open a video to start"
-            case .blocked: return "Needs permission — tap for setup"
-            case .notAuthorized: return "Automation blocked — tap for setup"
+            case .blocked: return "Needs permission"
+            case .notAuthorized: return "Automation blocked"
             case .playing(let t, let playing):
                 let prefix = together ? "Together · " : ""
                 return "\(prefix)\(playing ? "▶" : "⏸") \(PlayerCard.fmt(t)) · synced"
             }
         }
-        return "Running · tap to sync"
+        return "Tap to sync here"
     }
 
     private var statusIsWarning: Bool {

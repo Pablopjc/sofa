@@ -671,6 +671,13 @@ final class PlayerBridge {
         } else {
             playingChanged = true
         }
+        // Celebrate the moment a blocked/unauthorized browser starts working —
+        // the reward that closes the permission-fix loop.
+        switch state.extLive {
+        case .blocked, .notAuthorized:
+            state.showToast("Connected — you're in sync")
+        default: break
+        }
         if playingChanged || now.timeIntervalSince(lastLivePublishedAt) >= 1.5 {
             state.extLive = .playing(time: time, isPlaying: playing)
             lastLivePublishedAt = now

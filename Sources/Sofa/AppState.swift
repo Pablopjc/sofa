@@ -30,8 +30,7 @@ enum PlayerChoice: String, CaseIterable, Identifiable {
         case .quicktime: return "Play your movie as usual — Sofa mirrors play, pause and skips."
         case .vlc: return "Play your movie as usual — Sofa mirrors play, pause and skips."
         case .appleTV: return "Play your movie as usual — Sofa mirrors play, pause and skips."
-        case .chrome: return "Keep the video tab in front. One-time setup: View → Developer → Allow JavaScript from Apple Events."
-        case .safari: return "Keep the video tab in front. One-time setup: Develop → Allow JavaScript from Apple Events."
+        case .chrome, .safari: return "Keep the video tab in front — Sofa mirrors play, pause and skips."
         case .music: return "Play your music as usual — playback stays in sync."
         case .spotify: return "Play your music as usual — playback stays in sync."
         }
@@ -101,6 +100,44 @@ enum PlayerChoice: String, CaseIterable, Identifiable {
     }
 }
 
+/// A recognizable streaming service, derived from the playing URL's host, so
+/// a browser row can read "Netflix" instead of just "Safari".
+enum StreamingService: String {
+    case youtube = "YouTube"
+    case netflix = "Netflix"
+    case primeVideo = "Prime Video"
+    case disney = "Disney+"
+    case hbo = "Max"
+    case appleTVPlus = "Apple TV+"
+    case twitch = "Twitch"
+
+    var name: String { rawValue }
+    /// A short monogram drawn over the app icon.
+    var monogram: String {
+        switch self {
+        case .youtube: return "▶"
+        case .netflix: return "N"
+        case .primeVideo: return "P"
+        case .disney: return "D+"
+        case .hbo: return "M"
+        case .appleTVPlus: return "TV"
+        case .twitch: return "T"
+        }
+    }
+
+    static func from(urlString: String?) -> StreamingService? {
+        guard let urlString, let host = URL(string: urlString)?.host?.lowercased() else { return nil }
+        if host.contains("youtube.") || host.contains("youtu.be") { return .youtube }
+        if host.contains("netflix.") { return .netflix }
+        if host.contains("primevideo.") || host.contains("amazon.") { return .primeVideo }
+        if host.contains("disneyplus.") || host.contains("disney.") { return .disney }
+        if host.contains("max.com") || host.contains("hbomax.") { return .hbo }
+        if host.contains("tv.apple.") { return .appleTVPlus }
+        if host.contains("twitch.") { return .twitch }
+        return nil
+    }
+}
+
 /// Live state of the external player shown in the UI.
 enum ExtLiveState: Equatable {
     case searching
@@ -167,7 +204,15 @@ final class AppState: ObservableObject {
     var roomIsOnline: Bool { roomTransport == .online }
 
     // Player
-    @Published var playerChoice: PlayerChoice = .quicktime
+    @Published var playerChoice: PlayerChoice = {
+        if let raw = UserDefaults.standard.string(forKey: "SofaLastPlayer"),
+           let saved = PlayerChoice(rawValue: raw) {
+            return saved
+        }
+        return .quicktime
+    }() {
+        didSet { UserDefaults.standard.set(playerChoice.rawValue, forKey: "SofaLastPlayer") }
+    }
     @Published var extLive: ExtLiveState = .searching
     /// What's playing here, and what our friend says is playing on their side.
     @Published var nowPlaying: String?
@@ -488,11 +533,32 @@ final class AppState: ObservableObject {
         savedSessionForResume = Self.loadLastSession()
         statusLabel = label
         startDetecting()
-        // Default to whatever is already open, if the current pick isn't running.
-        if let first = detectedSources.first, !detectedSources.contains(playerChoice) {
+        // Prefer the player you used last time if it's open; otherwise whatever
+        // is already running. Sofa only ever scripts the player you pick — it
+        // never probes other apps behind your back.
+        if !detectedSources.contains(playerChoice), let first = detectedSources.first {
             playerChoice = first
         }
         applyPlayerChoice()
+    }
+
+    /// Bring a player app to the front (empty-state "Open …" buttons, and the
+    /// setup banner), then select it and poll so its row appears without waiting
+    /// for the detect timer. Commits to `choice` — never bounces elsewhere.
+    func openPlayer(_ choice: PlayerChoice) {
+        guard let bundleID = choice.bundleID,
+              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+            showToast("\(choice.shortLabel) isn't installed on this Mac.")
+            return
+        }
+        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.selectPlayer(choice)
+                self.refreshSources()
+                PlayerBridge.shared.wakePolling()
+            }
+        }
     }
 
     /// Called by SyncEngine only for an online session that had already passed
