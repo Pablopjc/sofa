@@ -52,6 +52,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         handleInvite(urlString: url.absoluteString)
     }
 
+    /// Clicking Sofa in Launchpad, Spotlight, Finder, or the Dock while it is
+    /// already running must open the panel. An accessory app has no ordinary
+    /// window for AppKit to re-show, so by default this reopen event does
+    /// nothing — which reads to the user as "I press the icon and the app
+    /// doesn't open." Show the panel instead. Fires only on user reactivation,
+    /// never on the first launch (which sets up the menu-bar item on its own).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard panel != nil else { return true } // reopen before setup finished
+        showPanel()
+        return true
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu bar app: no Dock icon
         installEditMenu()
