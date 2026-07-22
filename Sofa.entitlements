@@ -9,5 +9,15 @@
 	     would fail on a notarized build. -->
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
+
+	<!-- Team-ID–scoped access to the modern "data protection" keychain (the same
+	     one iOS uses). It lets Sofa read its own stored device credential keyed
+	     to the Developer ID Team (SX87SFWP3N) instead of to a specific signing
+	     certificate, so macOS never shows the "enter your login keychain
+	     password" prompt — not on a fresh install, and not after a future
+	     certificate renewal. Required for kSecUseDataProtectionKeychain on a
+	     Developer ID (non-sandboxed) app. See SocialService.KeychainCredential. -->
+	<key>com.apple.application-identifier</key>
+	<string>SX87SFWP3N.com.pablo.sofa.native</string>
 </dict>
 </plist>

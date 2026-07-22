@@ -214,6 +214,17 @@ final class SyncEngine {
     private var reconnectAllowed = false
     private var reconnectAttempt = 0
     private var reconnectWorkItem: DispatchWorkItem?
+    /// Minimum observed (local now − sender sentAt) per connection. Subtracting
+    /// it removes clock skew from latency compensation and lets genuinely
+    /// stale frames (a burst flushed out of a half-dead socket) be detected.
+    private var latencyBaselineMs: Double?
+    /// Liveness: with friends in the room, peer frames (hellos every 10s at
+    /// minimum) arrive constantly — silence means the link is dead even if
+    /// TCP hasn't noticed. Armed only after real peer traffic so a quiet room
+    /// can't trigger reconnect loops.
+    private var lastPeerFrameAt = Date.distantPast
+    private var livenessArmed = false
+    private var viabilityDeadline: DispatchWorkItem?
 
     /// The room secret: generated when hosting, taken from the link when joining.
     private(set) var roomToken: String?
@@ -290,6 +301,12 @@ final class SyncEngine {
         }
         roomToken = Self.generateToken()
         let params = NWParameters.tcp
+        if let tcp = params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
+            tcp.enableKeepalive = true
+            tcp.keepaliveIdle = 15
+            tcp.keepaliveInterval = 5
+            tcp.keepaliveCount = 3
+        }
         let ws = NWProtocolWebSocket.Options()
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
         let listener: NWListener
@@ -583,6 +600,14 @@ final class SyncEngine {
         roomToken = token
 
         let params: NWParameters = scheme == "wss" ? .tls : .tcp
+        // A silently dead path (sleep, Wi-Fi hop, NAT reap) otherwise takes
+        // minutes to surface; keepalive probes turn that into ~30 seconds.
+        if let tcp = params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
+            tcp.enableKeepalive = true
+            tcp.keepaliveIdle = 15
+            tcp.keepaliveInterval = 5
+            tcp.keepaliveCount = 3
+        }
         let ws = NWProtocolWebSocket.Options()
         ws.autoReplyPing = true
         ws.maximumMessageSize = 64 * 1024
@@ -606,6 +631,27 @@ final class SyncEngine {
             self.endClientConnection(conn)
         }
 
+        // "Not viable" that persists is a dead link in practice — act on it
+        // long before a send or TCP timeout would.
+        conn.viabilityUpdateHandler = { [weak self, weak conn] viable in
+            Task { @MainActor in
+                guard let self, let conn, conn === self.client else { return }
+                if viable {
+                    self.viabilityDeadline?.cancel()
+                    self.viabilityDeadline = nil
+                } else if self.viabilityDeadline == nil {
+                    let work = DispatchWorkItem { [weak self, weak conn] in
+                        Task { @MainActor in
+                            guard let self, let conn, conn === self.client else { return }
+                            self.viabilityDeadline = nil
+                            self.endClientConnection(conn)
+                        }
+                    }
+                    self.viabilityDeadline = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: work)
+                }
+            }
+        }
         conn.stateUpdateHandler = { [weak self, weak conn] st in
             Task { @MainActor in
                 guard let self else { return }
@@ -654,6 +700,11 @@ final class SyncEngine {
         onlineReconnectTarget = nil
         presenceTimer?.invalidate()
         presenceTimer = nil
+        latencyBaselineMs = nil
+        lastPeerFrameAt = .distantPast
+        livenessArmed = false
+        viabilityDeadline?.cancel()
+        viabilityDeadline = nil
 
         let pending = awaitingWelcome
         awaitingWelcome = nil
@@ -680,6 +731,9 @@ final class SyncEngine {
         client = nil
         presenceTimer?.invalidate()
         presenceTimer = nil
+        viabilityDeadline?.cancel()
+        viabilityDeadline = nil
+        livenessArmed = false
         conn.cancel()
         if let pending { _ = pending.tracker.finish(false) }
 
@@ -730,17 +784,34 @@ final class SyncEngine {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    /// Periodic presence: keeps names fresh and lets stale friends expire.
+    /// Periodic presence: keeps names fresh, lets stale friends expire, and
+    /// doubles as the liveness watchdog for half-dead sockets.
     func startPresence() {
         presenceTimer?.invalidate()
-        presenceTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let state = self.state, state.inRoom else { return }
+                // With friends present, peer frames arrive at least every 10s
+                // (their presence hellos). Prolonged silence on an online room
+                // means our socket died without TCP noticing — tear it down so
+                // the reconnect ladder runs instead of sending into the void.
+                if self.livenessArmed, state.roomIsOnline, state.peerCount > 1,
+                   Date().timeIntervalSince(self.lastPeerFrameAt) > 25,
+                   let client = self.client, self.awaitingWelcome == nil {
+                    self.livenessArmed = false
+                    self.endClientConnection(client)
+                    return
+                }
                 self.sendRaw(SyncMessage(type: "hello", name: state.displayName))
                 state.pruneFriends(olderThan: 31)
             }
         }
-        presenceTimer?.tolerance = 1.0
+        timer.tolerance = 1.0
+        presenceTimer = timer
+        // .common: hellos must not stall while a menu or popover is open —
+        // 31s of stalled presence gets us pruned (and the party auto-paused)
+        // on every friend's Mac.
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func handleDisconnect() {
@@ -766,6 +837,10 @@ final class SyncEngine {
         reconnectAllowed = false
         reconnectAttempt = 0
         onlineReconnectTarget = nil
+        latencyBaselineMs = nil
+        lastPeerFrameAt = .distantPast
+        livenessArmed = false
+        viabilityDeadline?.cancel(); viabilityDeadline = nil
         connectionGeneration &+= 1
         let pending = awaitingWelcome
         awaitingWelcome = nil
@@ -831,6 +906,11 @@ final class SyncEngine {
 
     /// Like send(), but also usable during the handshake (before inRoom).
     private func sendRaw(_ message: SyncMessage) {
+        // Nothing may beat the handshake hello onto a fresh socket: frames
+        // queued before it (poll ticks, presence hellos without the token)
+        // reach the relay first and it slams the connection with
+        // "hello required" — poisoning every reconnect attempt mid-movie.
+        if awaitingWelcome != nil, message.type != "hello" || message.token == nil { return }
         var msg = message
         msg.from = String(myId)
         msg.sentAt = Date().timeIntervalSince1970 * 1000
@@ -840,11 +920,46 @@ final class SyncEngine {
 
     // MARK: - Incoming routing
 
+    /// True when two peers are watching the same content — by tolerant URL
+    /// key, or by title when the URLs disagree (per-user tracking params made
+    /// exact URL equality fail routinely outside Netflix/YouTube).
+    static func contentMatches(
+        localURL: String?, remoteURL: String?,
+        localTitle: String?, remoteTitle: String?
+    ) -> Bool {
+        guard let localURL, let remoteURL else { return true }
+        if let localKey = PlayerBridge.contentKey(localURL),
+           let remoteKey = PlayerBridge.contentKey(remoteURL),
+           localKey == remoteKey {
+            return true
+        }
+        guard let localTitle = localTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let remoteTitle = remoteTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !localTitle.isEmpty else { return false }
+        return localTitle.compare(
+            remoteTitle, options: [.caseInsensitive, .diacriticInsensitive]
+        ) == .orderedSame
+    }
+
     private func handleIncoming(_ data: Data, from conn: NWConnection) {
         guard conn === client else { return }
-        guard let msg = SyncMessage.decode(data) else { return }
+        guard var msg = SyncMessage.decode(data) else { return }
         if msg.from == String(myId) { return }
         guard let state = self.state else { return }
+        if msg.from != nil {
+            lastPeerFrameAt = Date()
+            livenessArmed = true
+        }
+        // Clock-skew-corrected age: the minimum delta over the connection is
+        // skew + best-path delay; anything far above it arrived late.
+        var frameAgeSeconds: Double = 0
+        if let sentAt = msg.sentAt {
+            let deltaMs = Date().timeIntervalSince1970 * 1000 - sentAt
+            let baseline = Swift.min(latencyBaselineMs ?? deltaMs, deltaMs)
+            latencyBaselineMs = baseline
+            frameAgeSeconds = (deltaMs - baseline) / 1000
+            msg.sentAt = sentAt + baseline
+        }
         do {
             switch msg.type {
             case "welcome":
@@ -858,8 +973,22 @@ final class SyncEngine {
                     _ = pending.tracker.finish(true)
                     guard pending.purpose.generation == connectionGeneration,
                           conn === client else { return }
+                    // Fresh socket, fresh network path: restart the skew
+                    // baseline and the liveness clock.
+                    latencyBaselineMs = nil
+                    lastPeerFrameAt = Date()
+                    livenessArmed = false
                     startPresence()
-                    if restored { state.markOnlineConnectionRestored() }
+                    if restored {
+                        state.markOnlineConnectionRestored()
+                        // Friends dropped every frame we "sent" while the old
+                        // socket was dead. Re-assert what we know so the room
+                        // converges instead of trusting a lost pause/seek.
+                        state.broadcastCurrentMedia()
+                        if case .playing(let time, let playing) = state.extLive {
+                            send(SyncMessage(type: "seek", time: time, playing: playing))
+                        }
+                    }
                 }
             case "hello":
                 if let id = msg.from {
@@ -894,9 +1023,20 @@ final class SyncEngine {
                     playing: msg.playing ?? (msg.type == "play" ? true : (msg.type == "pause" ? false : nil)),
                     sentAt: msg.sentAt
                 )
-                let sameContent = msg.url == nil || state.nowPlayingURL == nil ||
-                    msg.url == state.nowPlayingURL
-                guard sameContent else { break }
+                // A command flushed late out of a half-dead socket describes a
+                // past the room has moved on from — applying it "fresh" yanked
+                // players to stale positions.
+                guard frameAgeSeconds < 15 else { break }
+                let sameContent = Self.contentMatches(
+                    localURL: state.nowPlayingURL, remoteURL: msg.url,
+                    localTitle: state.nowPlaying, remoteTitle: msg.name
+                )
+                guard sameContent else {
+                    // Never drop silently: both sides believing they're synced
+                    // while nothing propagates was the reported failure.
+                    state.noteMismatchedContentCommandDropped()
+                    break
+                }
                 PlayerBridge.shared.applyRemote(msg)
             default:
                 break

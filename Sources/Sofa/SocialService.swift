@@ -261,18 +261,29 @@ final class SocialService: ObservableObject {
 
     private func bootstrap() async {
         do {
-            if let saved = KeychainCredential.load() {
+            switch KeychainCredential.loadOrMigrate() {
+            case .found(let saved):
                 credential = saved
                 do {
                     let profile: Profile = try await request(path: "/me")
                     friendLink = profile.friendLink
-                } catch {
+                } catch SocialError.unauthorized {
+                    // The server *definitively* rejected the token — only now is
+                    // it safe to discard it and start over. Transient failures
+                    // (offline, 5xx, timeout) fall through to the outer catch,
+                    // which retries with backoff and keeps the credential intact,
+                    // so a passing network blip never re-identifies the user.
                     credential = nil
                     KeychainCredential.delete()
                     try await register()
                 }
-            } else {
+            case .empty:
                 try await register()
+            case .declined:
+                // The user dismissed the one-time keychain-migration prompt. Do
+                // not mint a fresh identity (that would orphan their friends);
+                // leave Friends idle and let a future launch re-offer it.
+                throw SocialError.migrationDeclined
             }
             ready = true
             errorMessage = nil
@@ -283,6 +294,12 @@ final class SocialService: ObservableObject {
                 self.pendingFriendLink = nil
                 acceptFriendLink(pendingFriendLink)
             }
+        } catch SocialError.migrationDeclined {
+            // Stay quietly un-ready without hammering the retry loop; the next
+            // app launch re-attempts the migration.
+            ready = false
+            errorMessage = nil
+            bootstrapRetryAttempt = 0
         } catch {
             if errorMessage != "Friends are temporarily unavailable." {
                 errorMessage = "Friends are temporarily unavailable."
@@ -307,7 +324,10 @@ final class SocialService: ObservableObject {
         guard let token = profile.authToken else { throw SocialError.invalidResponse }
         let value = Credential(id: profile.id, token: token)
         credential = value
-        try KeychainCredential.save(value)
+        // Persist best-effort: a keychain write failure must not throw here, or
+        // the outer bootstrap catch would retry and mint yet another identity on
+        // every launch. The in-memory credential keeps this session working.
+        try? KeychainCredential.save(value)
         friendLink = profile.friendLink
     }
 
@@ -471,7 +491,13 @@ final class SocialService: ObservableObject {
             request.httpBody = try JSONEncoder().encode(body)
         }
         let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        guard let http = response as? HTTPURLResponse else { throw SocialError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            // Only 401/403 mean the credential itself is rejected. Everything
+            // else (5xx, gateway errors, rate limits) is transient and must not
+            // cause a caller to discard a still-valid credential. Offline /
+            // timeout never reach here — session.data(for:) throws URLError.
+            if http.statusCode == 401 || http.statusCode == 403 { throw SocialError.unauthorized }
             throw SocialError.server
         }
         return try JSONDecoder().decode(T.self, from: data)
@@ -493,34 +519,117 @@ private struct FriendEnvelope: Decodable { let id: String; let name: String }
 private struct InviteResponse: Decodable { let ok: Bool; let delivered: Bool }
 private struct EmptyResponse: Decodable { let ok: Bool }
 
-private enum SocialError: Error { case invalidResponse, notRegistered, server }
+private enum SocialError: Error { case invalidResponse, notRegistered, server, unauthorized, migrationDeclined }
 
 private enum KeychainCredential {
     private static let service = "com.pablo.sofa.native.social"
     private static let account = "device-credential"
 
-    static func load() -> SocialService.Credential? {
-        let query: [String: Any] = [
+    // Sofa keeps its device credential in the modern *data protection* keychain
+    // (kSecUseDataProtectionKeychain), whose access is granted by the app's
+    // Team-ID entitlement rather than by an interactive per-item ACL. That is
+    // what stops macOS from ever asking a fresh user to "enter the login
+    // keychain password". Builds signed without that entitlement (local
+    // self-signed / ad-hoc dev builds) transparently fall back to the legacy
+    // login keychain so Friends still works while developing.
+
+    private static func baseQuery(dataProtection: Bool) -> [String: Any] {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
         ]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return try? JSONDecoder().decode(SocialService.Credential.self, from: data)
+        if dataProtection { query[kSecUseDataProtectionKeychain as String] = true }
+        return query
+    }
+
+    enum LoadResult {
+        case found(SocialService.Credential)
+        case empty                       // nothing stored anywhere → register fresh
+        case declined                    // user dismissed the migration prompt → retry next launch
+    }
+
+    static func loadOrMigrate() -> LoadResult {
+        // 1. Modern keychain — always silent, no prompt is ever possible here.
+        var modernResult: CFTypeRef?
+        var modernQuery = baseQuery(dataProtection: true)
+        modernQuery[kSecReturnData as String] = true
+        modernQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+        let modernStatus = SecItemCopyMatching(modernQuery as CFDictionary, &modernResult)
+        if modernStatus == errSecSuccess,
+           let data = modernResult as? Data,
+           let credential = try? JSONDecoder().decode(SocialService.Credential.self, from: data) {
+            return .found(credential)
+        }
+
+        // 2. Legacy login keychain. A brand-new user has nothing here, so this
+        //    stays silent (errSecItemNotFound). A user upgrading from a
+        //    pre-migration build has an item bound to the old signing identity —
+        //    reading it shows the password prompt exactly once.
+        var legacyResult: CFTypeRef?
+        var legacyQuery = baseQuery(dataProtection: false)
+        legacyQuery[kSecReturnData as String] = true
+        legacyQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+        let legacyStatus = SecItemCopyMatching(legacyQuery as CFDictionary, &legacyResult)
+
+        if legacyStatus == errSecSuccess,
+           let data = legacyResult as? Data,
+           let credential = try? JSONDecoder().decode(SocialService.Credential.self, from: data) {
+            // Copy it into the modern keychain so every future launch is silent.
+            // We intentionally do NOT delete the legacy item: it's never read
+            // again (the modern copy wins next launch), and deleting it could
+            // itself raise a second prompt. It also stays as a safety net for a
+            // dev build that lacks the entitlement. Migrate only when the modern
+            // keychain is genuinely usable (errSecItemNotFound, not a missing
+            // entitlement on a self-signed dev build).
+            if modernStatus == errSecItemNotFound { _ = saveModern(data) }
+            return .found(credential)
+        }
+
+        // The legacy item exists but we couldn't read it — the user dismissed
+        // the password prompt (errSecUserCanceled / errSecAuthFailed / …).
+        // Report .declined so bootstrap does NOT register a new identity over
+        // the top of it; a later launch offers the migration again.
+        if legacyStatus != errSecItemNotFound { return .declined }
+        return .empty
     }
 
     static func save(_ credential: SocialService.Credential) throws {
         let data = try JSONEncoder().encode(credential)
-        let key: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        let status = SecItemUpdate(key as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        switch saveModern(data) {
+        case errSecSuccess:
+            return
+        case errSecMissingEntitlement:
+            try saveLegacy(data) // dev builds without the app-identifier entitlement
+        default:
+            throw SocialError.server
+        }
+    }
+
+    static func delete() {
+        SecItemDelete(baseQuery(dataProtection: true) as CFDictionary)
+        deleteLegacy()
+    }
+
+    // MARK: - Modern (data protection) keychain
+
+    private static func saveModern(_ data: Data) -> OSStatus {
+        let key = baseQuery(dataProtection: true)
+        let status = SecItemUpdate(key as CFDictionary,
+                                   [kSecValueData as String: data] as CFDictionary)
+        guard status == errSecItemNotFound else { return status }
+        var add = key
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(add as CFDictionary, nil)
+    }
+
+    // MARK: - Legacy login keychain (dev-build fallback; migration source read inline above)
+
+    private static func saveLegacy(_ data: Data) throws {
+        let key = baseQuery(dataProtection: false)
+        let status = SecItemUpdate(key as CFDictionary,
+                                   [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
             var add = key
             add[kSecValueData as String] = data
@@ -530,11 +639,7 @@ private enum KeychainCredential {
         }
     }
 
-    static func delete() {
-        SecItemDelete([
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ] as CFDictionary)
+    private static func deleteLegacy() {
+        SecItemDelete(baseQuery(dataProtection: false) as CFDictionary)
     }
 }

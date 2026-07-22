@@ -293,9 +293,26 @@ final class AppState: ObservableObject {
             friends[i].lastSeen = Date()
             return false
         }
+        // The public relay mints a fresh peerID on every reconnect, so the
+        // same person can come back under a new id. Fold the old identity
+        // away silently — left behind, its 31s prune would auto-pause the
+        // whole party for a phantom departure.
+        let rekeyed = friends.contains { !$0.id.hasPrefix("sim-") && $0.name == name }
+        friends.removeAll { !$0.id.hasPrefix("sim-") && $0.name == name }
         friends.append(Friend(id: id, name: name, lastSeen: Date()))
-        showToast("\(name) joined the party")
+        if !rekeyed { showToast("\(name) joined the party") }
         return true
+    }
+
+    /// A sync command was ignored because the two Macs are watching different
+    /// content. Surfaced (throttled) — silently dropping commands left both
+    /// sides believing they were in sync while nothing propagated.
+    private var lastMismatchToastAt = Date.distantPast
+    func noteMismatchedContentCommandDropped() {
+        guard Date().timeIntervalSince(lastMismatchToastAt) > 60 else { return }
+        lastMismatchToastAt = Date()
+        let friendLabel = friendNowPlaying.map { "“\($0)”" } ?? "something else"
+        showToast("Sync is off — your friend is watching \(friendLabel), not your video.")
     }
 
     func removeFriend(id: String) {
@@ -323,11 +340,18 @@ final class AppState: ObservableObject {
         guard !dropped.isEmpty else { return }
         friends.removeAll(where: isStale)
         // A pruned friend vanished mid-party (network drop, sleep) — unlike a
-        // clean "bye". Stop the movie so nobody silently runs ahead.
+        // clean "bye". Stop the movie so nobody silently runs ahead. When
+        // EVERYONE went stale at once it's almost always our own link that
+        // died, so don't blame a friend by name.
+        let allGone = friends.isEmpty && roomTransport == .online
         if autoPauseIfPlaying() {
-            showToast("Paused — \(dropped[0].name) lost connection")
+            showToast(allGone
+                ? "Paused — the connection looks unstable"
+                : "Paused — \(dropped[0].name) lost connection")
         } else {
-            showToast("\(dropped[0].name) lost connection")
+            showToast(allGone
+                ? "The connection looks unstable"
+                : "\(dropped[0].name) lost connection")
         }
     }
 
@@ -525,6 +549,24 @@ final class AppState: ObservableObject {
         RoomTarget.parse(text)
     }
 
+    /// While a party is live, macOS must not App-Nap us: this is a menu-bar
+    /// app with no visible window while the movie plays fullscreen — exactly
+    /// when timer throttling would stall polling, ticks and presence, and let
+    /// the room drift tens of seconds apart.
+    private var roomActivity: NSObjectProtocol?
+    private func beginRoomActivity() {
+        guard roomActivity == nil else { return }
+        roomActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical],
+            reason: "Sofa keeps your watch party in sync"
+        )
+    }
+    private func endRoomActivity() {
+        guard let roomActivity else { return }
+        ProcessInfo.processInfo.endActivity(roomActivity)
+        self.roomActivity = nil
+    }
+
     private func enterRoom(label: String) {
         inRoom = true
         disconnected = false
@@ -532,6 +574,7 @@ final class AppState: ObservableObject {
         resumeDismissed = false
         savedSessionForResume = Self.loadLastSession()
         statusLabel = label
+        beginRoomActivity()
         startDetecting()
         // Prefer the player you used last time if it's open; otherwise whatever
         // is already running. Sofa only ever scripts the player you pick — it
@@ -619,6 +662,7 @@ final class AppState: ObservableObject {
                 self.inRoom = true
                 self.disconnected = false
                 self.statusLabel = "Test mode"
+                self.beginRoomActivity()
                 self.startDetecting()
                 // Drive whatever player is already open; if none, the room UI
                 // guides you to open one (QuickTime, Safari…).
@@ -633,6 +677,7 @@ final class AppState: ObservableObject {
 
     func leaveRoom() {
         saveSessionSnapshot()
+        endRoomActivity()
         roomOperationID = nil
         canRejoin = false
         if theaterActive || theaterTransitioning { stopTheater() }
@@ -921,10 +966,29 @@ final class AppState: ObservableObject {
             showToast("Independent FaceTime volume requires macOS 14.2 or later.")
             return
         }
+        // First time the user turns the call down, explain — clearly, and BEFORE
+        // macOS' alarming "record this computer's audio" prompt appears — what the
+        // permission is really for. Only proceed to the system prompt if they
+        // choose to continue; the explainer reappears until they do.
         if value < 99.5,
            !UserDefaults.standard.bool(forKey: "SofaExplainedAudioCapture") {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "Lower the call without touching the movie"
+            alert.informativeText = """
+                To turn only the FaceTime call down, macOS will next ask Sofa for \
+                “audio recording” access. Sofa does not record anything: it adjusts \
+                FaceTime’s audio on your Mac in real time and plays it right back. \
+                Nothing is saved, and nothing ever leaves your Mac.
+                """
+            alert.addButton(withTitle: "Continue")
+            alert.addButton(withTitle: "Not Now")
+            guard alert.runModal() == .alertFirstButtonReturn else {
+                callVolume = 100
+                UserDefaults.standard.set(100.0, forKey: "SofaFaceTimeVolume")
+                return
+            }
             UserDefaults.standard.set(true, forKey: "SofaExplainedAudioCapture")
-            showToast("Allow Sofa to capture system audio. FaceTime is processed locally and never recorded.")
         }
         CallAudioVolume.shared.set(percent: value) { [weak self] result in
             Task { @MainActor [weak self] in
@@ -1009,8 +1073,12 @@ final class AppState: ObservableObject {
             return
         }
         guard WindowArranger.hasAccessibilityPermission else {
-            WindowArranger.requestAccessibilityPermission()
-            showToast("Allow Sofa in Accessibility, then press the button again.")
+            if AppLocation.isRunningFromQuarantinedLocation {
+                showToast("Move Sofa to your Applications folder and reopen it — macOS won't keep Accessibility from here.")
+            } else {
+                WindowArranger.requestAccessibilityPermission()
+                showToast("Allow Sofa in Accessibility, then press the button again.")
+            }
             return
         }
         let requestID = UUID()

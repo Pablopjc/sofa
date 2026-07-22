@@ -26,6 +26,8 @@ final class SetupCheck: ObservableObject {
         var settingsAnchor: String?
         /// Bundle id to (re-)ask Automation consent for, when applicable.
         var automationBundleID: String?
+        /// Shows a "Show in Finder" button instead of "Open Settings".
+        var revealApp: Bool = false
     }
 
     @Published private(set) var rows: [Row] = []
@@ -46,6 +48,18 @@ final class SetupCheck: ObservableObject {
         running = true
 
         var next: [Row] = []
+        // If Sofa is running translocated / from Downloads / the disk image, no
+        // permission below can ever stick. Surface that first, above everything.
+        if AppLocation.isRunningFromQuarantinedLocation {
+            next.append(Row(
+                id: "install-location",
+                title: "Move Sofa to Applications first",
+                detail: "Sofa is running from Downloads or its disk image. From there macOS forgets every permission each time you open it — so Accessibility keeps switching itself off. Drag Sofa into your Applications folder, reopen it, and then grant the permissions below.",
+                status: .denied,
+                settingsAnchor: nil,
+                revealApp: true
+            ))
+        }
         for target in Self.automationTargets {
             // Only surface apps that exist on this Mac.
             guard NSWorkspace.shared.urlForApplication(
@@ -63,7 +77,7 @@ final class SetupCheck: ObservableObject {
         next.append(Row(
             id: "accessibility",
             title: "Arrange windows (Theater)",
-            detail: "Accessibility permission — lets Theater place the video and your call side by side.",
+            detail: "Accessibility permission — lets Theater place the video and your call side by side. If you turned it on and it still shows off here, remove Sofa from the list with the – button and add it back (an older version can leave a stale entry).",
             status: .checking,
             settingsAnchor: "Privacy_Accessibility"
         ))
@@ -243,7 +257,12 @@ private struct SetupCheckRow: View {
     @ViewBuilder private var actionButton: some View {
         switch row.status {
         case .denied:
-            if let anchor = row.settingsAnchor {
+            if row.revealApp {
+                Button("Show in Finder") { AppLocation.revealInFinder() }
+                    .sofaGlassButton()
+                    .font(.system(size: 11))
+                    .fixedSize()
+            } else if let anchor = row.settingsAnchor {
                 Button("Open Settings") { SetupCheck.shared.openSettings(anchor: anchor) }
                     .sofaGlassButton()
                     .font(.system(size: 11))

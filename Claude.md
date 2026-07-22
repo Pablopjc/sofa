@@ -44,9 +44,9 @@ Todo en `Sources/Sofa/` (~7 200 líneas). Por orden de importancia:
 
 | Fichero | Líneas | Responsabilidad |
 |---|---|---|
-| `AppState.swift` | 922 | **Empieza aquí.** Estado central `@MainActor` y orquestador: ciclo de vida de la sala (`hostRoom`, `join`, `leaveRoom`, `enterTestZone`), selección de reproductor, Theater, audio, roster de amigos. Casi toda acción de usuario pasa por aquí. |
-| `SyncEngine.swift` | 914 | Protocolo de sincronización. Relay LAN embebido (`NWListener`) + cliente (`NWConnection`), handshake con secreto, presencia, difusión y aplicación de comandos. |
-| `PlayerBridge.swift` | 916 | Puente AppleScript a los reproductores externos. Sondeo (~0,85 s), detección de cambios locales, aplicación de comandos remotos, inyección de JS en navegadores. |
+| `AppState.swift` | 1251 | **Empieza aquí.** Estado central `@MainActor` y orquestador: ciclo de vida de la sala (`hostRoom`, `join`, `leaveRoom`, `enterTestZone`), selección de reproductor, Theater, audio, roster de amigos. Casi toda acción de usuario pasa por aquí. |
+| `SyncEngine.swift` | 1066 | Protocolo de sincronización. Relay LAN embebido (`NWListener`) + cliente (`NWConnection`), handshake con secreto, presencia + vigilancia de vida, difusión y aplicación de comandos. |
+| `PlayerBridge.swift` | 1138 | Puente AppleScript a los reproductores externos. Sondeo (~0,85 s), detección de cambios locales, aplicación de comandos remotos, inyección de JS en navegadores. |
 | `WindowArranger.swift` | 1149 | Theater: composición verificada y reversible de ventanas. La parte más delicada del proyecto. |
 | `Views.swift` | 1201 | Toda la UI SwiftUI: panel, tour de bienvenida, tarjetas de sala/reproductor/audio/Theater, invitaciones. |
 | `SocialService.swift` | 434 | Amigos guardados e invitaciones vía `/v1/social/...`. Identidad de dispositivo en el llavero. |
@@ -93,8 +93,17 @@ depende de Cloudflare.
 **El bucle de sincronización** (`PlayerBridge`): cada ~0,85 s pregunta al
 reproductor su posición y estado; si detecta un cambio que no provocó un
 comando remoto, lo difunde. Al recibir un comando remoto lo aplica con
-compensación de latencia y activa una ventana de supresión para no crear un eco
-infinito. Cada 5 s manda un `tick` de posición para corregir deriva.
+compensación de latencia (corregida de desfase de reloj con una línea base
+mínima por conexión, `latencyBaselineMs`) y activa una ventana de supresión
+para no crear un eco infinito. La supresión es **semántica**, no ciega: guarda
+el estado que el comando remoto debe producir (`expectedPlayingAfterRemote`) y
+se re-ancla cuando el comando termina de ejecutarse
+(`markRemoteCommandSettled`); una acción del usuario que contradiga al comando
+ya asentado se difunde igualmente. Cada 5 s se manda un `tick` de estado
+**también en pausa** (lleva `playing`): un receptor que sigue reproduciendo
+cuando el emisor está pausado repara así una pausa perdida (converge siempre
+hacia pausa, la dirección segura). Un `tick` que no corrige nada no toca la
+supresión ni la línea base de detección.
 
 ---
 
@@ -107,6 +116,52 @@ reproducir antes el problema.
 Safari si no está abierto. Con un sondeo cada 0,85 s, esto resucitaba la app
 cada vez que el usuario la cerraba. Siempre comprobar `PlayerChoice.isRunning`
 (que usa `NSRunningApplication`) **antes** de cualquier AppleScript.
+
+**La supresión ciega se tragaba pausas (la gran causa del "no es fiable",
+0.1.63).** Hasta 0.1.62, *cualquier* mensaje recibido — incluido cada `tick`
+de cada amigo, cada ~5 s — abría 2 s de ceguera (`suppressUntil` +
+`lastState = nil`) en la que la línea base se sobrescribía sin comparar: una
+pausa local en esa ventana **no se difundía jamás** (en salas de 3 la ceguera
+cubría la mayoría del tiempo). Encima la pausa era un mensaje único sin
+reparación (los ticks solo se emitían/aplicaban reproduciendo), así que una
+pausa perdida = amigos 20-30 s por delante. No volver a suprimir a ciegas: ver
+`expectedPlayingAfterRemote`, `markRemoteCommandSettled`, ticks de estado en
+pausa y la reparación en `applyRemote("tick")`.
+
+**Un frame puede adelantar al hello del handshake y envenenar la reconexión.**
+`NWConnection` encola envíos antes de `.ready`; un `tick` del sondeo encolado
+en una reconexión llegaba al relay **antes** del hello con token y el relay
+cerraba con 1008 "hello required", en bucle. `sendRaw` descarta todo lo que no
+sea el hello con token mientras `awaitingWelcome != nil`. No quitar esa guarda.
+
+**App Nap estrangulaba los timers justo durante la peli.** Sofa es un app de
+barra de menús sin ventana visible mientras se ve el vídeo: candidata ideal a
+App Nap, que espacia los timers (sondeo, ticks, presencia) y deja la sala a la
+deriva. En sala se mantiene `ProcessInfo.beginActivity([.userInitiated,
+.latencyCritical])` (`roomActivity` en `AppState`); se libera en `leaveRoom`.
+
+**Sockets zombi: TCP no avisa en minutos.** Tras una siesta del Mac o un
+cambio de Wi-Fi, los envíos caen en un socket medio muerto y el usuario cree
+que sincroniza. Defensas en capas (0.1.63): keepalive TCP (15 s/5 s/×3),
+`viabilityUpdateHandler` con plazo de 12 s, y un vigilante aplicativo en el
+timer de presencia (con amigos en sala online, >25 s sin frames de peers =
+enlace muerto → escalera de reconexión). Tras el `welcome` de una reconexión
+se re-anuncia el estado (`broadcastCurrentMedia` + `seek`) porque todo lo
+"enviado" durante la caída se perdió. Los comandos con antigüedad corregida
+>15 s se descartan (un socket zombi los soltaba en ráfaga al morir).
+
+**El relay reasigna `from` en cada reconexión.** El peerID es aleatorio por
+socket: el mismo amigo reaparece con otra identidad, y su entrada vieja
+acababa podada a los 31 s con auto-pausa fantasma para toda la sala.
+`upsertFriend` pliega en silencio la entrada antigua con el mismo nombre.
+
+**URLs iguales no significan contenido igual (y al revés).** Fuera de
+Netflix/YouTube, `location.href` lleva tracking por usuario (query strings,
+`/ref=…` de Amazon): dos personas viendo lo mismo tenían URLs distintas y el
+guard `sameContent` descartaba **en silencio** todos los comandos entre ellas.
+Comparar con `PlayerBridge.contentKey` (host+path tolerante) con reserva a
+título igual (`SyncEngine.contentMatches`), y avisar con toast (throttled)
+cuando de verdad se descarta. Nunca descartar en silencio.
 
 **WebSocket con `NWConnection` exige endpoint URL.** Con `.hostPort` el
 handshake HTTP sale malformado y la conexión aborta con POSIX 53. Hay que usar

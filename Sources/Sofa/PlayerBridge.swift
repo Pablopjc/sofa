@@ -12,6 +12,20 @@ final class PlayerBridge {
     private var lastState: (time: Double, playing: Bool, at: Date)?
     private var suppressUntil = Date.distantPast
     private var lastTickSent = Date.distantPast
+    /// Play state the last remote command should leave the player in. While
+    /// suppressed, an observation that CONTRADICTS this after the command
+    /// settled is a genuine user action and must still reach the room.
+    private var expectedPlayingAfterRemote: Bool?
+    private var remoteCommandSettled = false
+    /// Target of a remote seek still settling (browser seeks are async).
+    private var pendingSeekTarget: (time: Double, at: Date)?
+    /// Last local user play/pause we detected or applied — grace window so a
+    /// friend's stale paused-tick can't cancel a play the user just pressed.
+    private var lastLocalTransitionAt = Date.distantPast
+    private var consecutivePollErrors = 0
+    /// Accessed only from `queue`: consecutive tick corrections that failed to
+    /// stick (player ignoring seeks, e.g. DRM in the TV app).
+    private var driftCorrectionStreak = 0
     private var lastPublishedMetadata: String?
     private var lastLivePublishedAt = Date.distantPast
     private var nextPollAllowedAt = Date.distantPast
@@ -44,7 +58,8 @@ final class PlayerBridge {
     private static let jsHelpers =
         "function nfp(){try{var vp=netflix.appContext.state.playerApp.getAPI().videoPlayer;" +
         "var ids=vp.getAllPlayerSessionIds();if(!ids.length)return null;" +
-        "return vp.getVideoPlayerBySessionId(ids[0])}catch(e){return null}}" +
+        "var w=ids.filter(function(i){return String(i).indexOf('watch')===0});" +
+        "return vp.getVideoPlayerBySessionId(w.length?w[0]:ids[0])}catch(e){return null}}" +
         "function npe(p){try{return p&&typeof p.getElement==='function'?p.getElement():null}catch(e){return null}}" +
         "var onNF=location.hostname.indexOf('netflix')>-1;" +
         "function vpreview(v){try{return !!v.closest('#inline-preview-player,ytd-video-preview," +
@@ -88,6 +103,10 @@ final class PlayerBridge {
         "if(onNF){var nm=location.pathname.match(/\\/watch\\/(\\d+)/);if(nm)mediaURL=location.origin+'/watch/'+nm[1];" +
         "var sels=['[data-uia=video-title]','[data-uia=episode-title]','.video-title'];" +
         "for(var j=0;j<sels.length;j++){var el=document.querySelector(sels[j]);if(el&&el.innerText.trim()){t=el.innerText.trim().replace(/\\s*\\n\\s*/g,' — ');break}}}" +
+        // During a YouTube ad the main <video> is the ad itself: its clock and
+        // play state must never be broadcast as movie positions.
+        "if(location.hostname.indexOf('youtube')>-1){var ap=document.querySelector('#movie_player');" +
+        "if(ap&&(ap.className.indexOf('ad-showing')>-1||ap.className.indexOf('ad-interrupting')>-1))return 'none'}" +
         "var p=onNF?nfp():null;var tm=p?p.getCurrentTime()/1000:(v?v.currentTime:0);" +
         "function fsok(){var f=document.fullscreenElement||document.webkitFullscreenElement;if(!f)return false;" +
         "var h=location.hostname.toLowerCase(),x=null;" +
@@ -99,18 +118,21 @@ final class PlayerBridge {
         "return 'SOFAJSON|'+encodeURIComponent(JSON.stringify(data))})()"
     }
 
+    // Both command payloads report whether a player was actually found — a
+    // command that lands on a tab without the video (wrong tab in front) used
+    // to be a silent no-op, the worst failure mode a sync app can have.
     private static func browserCmdJS(_ cmd: String) -> String {
         "(function(){\(jsHelpers)" +
-        "if(onNF){var p=nfp();if(p){p.\(cmd)();return}}" +
-        "var v=bv();if(v)v.\(cmd)()})()"
+        "if(onNF){var p=nfp();if(p){p.\(cmd)();return 'SOFA_OK'}}" +
+        "var v=bv();if(v){v.\(cmd)();return 'SOFA_OK'}return 'SOFA_ERR|no-video'})()"
     }
 
     private static func browserSeekJS(_ t: Double) -> String {
         let secs = String(format: "%.3f", t)
         let ms = Int((t * 1000).rounded())
         return "(function(){\(jsHelpers)" +
-        "if(onNF){var p=nfp();if(p){p.seek(\(ms));return}}" +
-        "var v=bv();if(v)v.currentTime=\(secs)})()"
+        "if(onNF){var p=nfp();if(p){p.seek(\(ms));return 'SOFA_OK'}}" +
+        "var v=bv();if(v){v.currentTime=\(secs);return 'SOFA_OK'}return 'SOFA_ERR|no-video'})()"
     }
 
     // Theater uses the same pattern as Teleparty: a tiny content helper marks
@@ -563,6 +585,12 @@ final class PlayerBridge {
         lastPublishedMetadata = nil
         lastLivePublishedAt = .distantPast
         nextPollAllowedAt = .distantPast
+        suppressUntil = .distantPast
+        expectedPlayingAfterRemote = nil
+        remoteCommandSettled = false
+        pendingSeekTarget = nil
+        lastLocalTransitionAt = .distantPast
+        consecutivePollErrors = 0
         let pollTimer = Timer(timeInterval: 0.85, repeats: true) { [weak self] _ in
             self?.poll()
         }
@@ -580,6 +608,12 @@ final class PlayerBridge {
         lastPublishedMetadata = nil
         lastLivePublishedAt = .distantPast
         nextPollAllowedAt = .distantPast
+        suppressUntil = .distantPast
+        expectedPlayingAfterRemote = nil
+        remoteCommandSettled = false
+        pendingSeekTarget = nil
+        lastLocalTransitionAt = .distantPast
+        consecutivePollErrors = 0
     }
 
     /// Resume a slow/idle poll immediately after an app launch or a remote
@@ -640,7 +674,11 @@ final class PlayerBridge {
             } else {
                 if state.extLive != .nothingOpen { state.extLive = .nothingOpen }
             }
-            lastState = nil
+            // Keep the baseline through a transient glitch: wiping it here
+            // meant a pause landing while the player was briefly busy was
+            // never compared, and therefore never broadcast.
+            consecutivePollErrors += 1
+            if consecutivePollErrors >= 3 { lastState = nil }
             // Permission errors and a temporarily busy browser should not burn
             // CPU by spawning osascript continuously. Do not report fullscreen
             // false here: a transient Apple Event timeout must not close Theater.
@@ -664,6 +702,7 @@ final class PlayerBridge {
             nextPollAllowedAt = Date().addingTimeInterval(3)
             return
         }
+        consecutivePollErrors = 0
         let time = media.time
         let playing = media.playing
         let now = Date()
@@ -694,16 +733,45 @@ final class PlayerBridge {
             state: state
         )
 
-        if let last = lastState, now >= suppressUntil {
-            let expected = last.time + (last.playing ? now.timeIntervalSince(last.at) : 0)
-            let jumped = abs(time - expected) > 3
-            if playing != last.playing {
-                state.sync.send(SyncMessage(type: playing ? "play" : "pause", time: time))
-            } else if jumped {
-                state.sync.send(SyncMessage(type: "seek", time: time, playing: playing))
-            } else if playing, now.timeIntervalSince(lastTickSent) > 5 {
-                state.sync.send(SyncMessage(type: "tick", time: time))
-                lastTickSent = now
+        if let last = lastState {
+            if now < suppressUntil {
+                // A remote command was just applied here. Its own echo must be
+                // absorbed — but a user action that CONTRADICTS the settled
+                // command ("no wait, pause") is real and must reach the room.
+                // Blanket suppression here was the main way a pause could be
+                // silently swallowed while friends played on.
+                if let expectedPlaying = expectedPlayingAfterRemote, remoteCommandSettled,
+                   playing != expectedPlaying {
+                    state.sync.send(SyncMessage(type: playing ? "play" : "pause", time: time))
+                    lastLocalTransitionAt = now
+                    expectedPlayingAfterRemote = nil
+                    suppressUntil = .distantPast
+                }
+            } else {
+                expectedPlayingAfterRemote = nil
+                let expected = last.time + (last.playing ? now.timeIntervalSince(last.at) : 0)
+                var jumped = abs(time - expected) > 3
+                if jumped, let target = pendingSeekTarget {
+                    // Browser seeks settle asynchronously and can outlive the
+                    // suppression window. Landing near the remote target is
+                    // the command finishing, not a user seek to re-broadcast.
+                    if now.timeIntervalSince(target.at) < 10, abs(time - target.time) < 5 {
+                        jumped = false
+                    }
+                    pendingSeekTarget = nil
+                }
+                if playing != last.playing {
+                    state.sync.send(SyncMessage(type: playing ? "play" : "pause", time: time))
+                    lastLocalTransitionAt = now
+                } else if jumped {
+                    state.sync.send(SyncMessage(type: "seek", time: time, playing: playing))
+                } else if now.timeIntervalSince(lastTickSent) > 5 {
+                    // Ticks flow while paused too, carrying `playing`: a friend
+                    // whose pause message was lost self-heals within one
+                    // cadence instead of drifting ahead forever.
+                    state.sync.send(SyncMessage(type: "tick", time: time, playing: playing))
+                    lastTickSent = now
+                }
             }
         }
         lastState = (time, playing, now)
@@ -779,7 +847,28 @@ final class PlayerBridge {
         )
     }
 
-    private static func canonicalMediaURL(_ raw: String) -> String? {
+    /// Comparison key answering "are these the same content?" across two Macs.
+    /// Streaming sites decorate location.href with per-user tracking (query
+    /// strings, Amazon's /ref=… path segments), so exact URL equality between
+    /// two viewers of the same movie routinely failed — and every sync command
+    /// between them was silently dropped by the sameContent gate.
+    static func contentKey(_ raw: String) -> String? {
+        guard let canonical = canonicalMediaURL(raw),
+              let components = URLComponents(string: canonical) else { return nil }
+        var host = components.host?.lowercased() ?? ""
+        if host.hasPrefix("www.") { host.removeFirst(4) }
+        var path = components.path
+        if let ref = path.range(of: "/ref=") { path = String(path[..<ref.lowerBound]) }
+        if path.hasSuffix("/") { path.removeLast() }
+        // The video id lives in the query only on YouTube (already canonical);
+        // everywhere else the query is volatile tracking noise.
+        let query = host.hasSuffix("youtube.com")
+            ? (components.queryItems?.first(where: { $0.name == "v" })?.value ?? "")
+            : ""
+        return host + path + "|" + query
+    }
+
+    static func canonicalMediaURL(_ raw: String) -> String? {
         guard var components = URLComponents(string: raw),
               let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
@@ -811,9 +900,12 @@ final class PlayerBridge {
     /// Suppressed from the poll so it isn't re-broadcast as a user action.
     func pauseLocally() {
         guard let player, player.isRunning else { return }
-        suppressUntil = Date().addingTimeInterval(2)
-        osa(pauseScript(for: player), requiring: player) { _, _ in }
-        lastState = nil
+        armSuppression(expecting: false)
+        osa(pauseScript(for: player), requiring: player) { [weak self] out, err in
+            guard let self else { return }
+            self.noteCommandResult(self.commandError(out, err), player: player)
+            self.markRemoteCommandSettled()
+        }
         wakePolling()
     }
 
@@ -831,61 +923,151 @@ final class PlayerBridge {
             hint = "macOS blocked Sofa from controlling \(player.shortLabel). Fix it in System Settings → Privacy & Security → Automation."
         } else if error.contains("timed out") {
             hint = "\(player.shortLabel) didn’t respond — sync may drift until it recovers."
+        } else if error == "SOFA_PLAYER_NOT_OPEN" {
+            hint = "A friend synced, but \(player.shortLabel) isn’t open on your Mac — sync is off."
+        } else if error == "SOFA_SEEK_INEFFECTIVE" {
+            hint = "\(player.shortLabel) is ignoring position sync for this video — Sofa will keep pace with play/pause only."
+        } else if error.contains("no-video") {
+            hint = "Sofa couldn’t find the video in \(player.shortLabel) — bring the video tab to the front."
         } else {
             hint = "Sofa couldn’t control \(player.shortLabel) — sync may drift."
         }
         DispatchQueue.main.async { AppState.shared.showToast(hint) }
     }
 
-    func applyRemote(_ msg: SyncMessage) {
-        guard let player, player.isRunning else { return }
+    /// Arms echo suppression for a remote command we are about to execute.
+    /// Main thread only.
+    private func armSuppression(expecting: Bool?) {
         suppressUntil = Date().addingTimeInterval(2)
+        if let expecting {
+            expectedPlayingAfterRemote = expecting
+            lastLocalTransitionAt = Date()
+        }
+        remoteCommandSettled = false
+        lastState = nil // resync baseline on next poll
+    }
+
+    /// Re-anchors suppression at the moment the command chain actually landed:
+    /// osascript can be slow, and a window anchored only at message receipt
+    /// expired before the player changed state, echoing the applied command
+    /// back to the room as if the user had performed it.
+    private func markRemoteCommandSettled() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.suppressUntil = Swift.max(self.suppressUntil, Date().addingTimeInterval(2))
+            self.remoteCommandSettled = true
+            self.lastState = nil
+            self.wakePolling()
+        }
+    }
+
+    /// Treats a "player found nothing to control" sentinel as a real error.
+    private func commandError(_ out: String?, _ err: String?) -> String? {
+        if let err { return err }
+        if let out, out.hasPrefix("SOFA_ERR") { return out }
+        return nil
+    }
+
+    func applyRemote(_ msg: SyncMessage) {
+        guard let player else { return }
+        guard player.isRunning else {
+            // A friend synced but our player is closed — say so (throttled)
+            // instead of silently diverging.
+            queue.async { self.noteCommandResult("SOFA_PLAYER_NOT_OPEN", player: player) }
+            return
+        }
         let latency = msg.latencySeconds
         let time = msg.time ?? 0
+        // A stale paused-tick must not cancel a play the user just pressed.
+        let allowPauseRepair = Date().timeIntervalSince(lastLocalTransitionAt) > 6
 
         switch msg.type {
         case "play":
-            osa(seekScript(for: player, to: time + latency), requiring: player) { [weak self] _, err in
+            armSuppression(expecting: true)
+            osa(seekScript(for: player, to: time + latency), requiring: player) { [weak self] out, err in
                 guard let self else { return }
-                self.noteCommandResult(err, player: player)
-                self.osa(self.playScript(for: player), requiring: player) { _, err2 in
-                    self.noteCommandResult(err2, player: player)
+                self.noteCommandResult(self.commandError(out, err), player: player)
+                self.osa(self.playScript(for: player), requiring: player) { out2, err2 in
+                    self.noteCommandResult(self.commandError(out2, err2), player: player)
+                    self.markRemoteCommandSettled()
                 }
             }
         case "pause":
-            osa(pauseScript(for: player), requiring: player) { [weak self] _, err in
+            armSuppression(expecting: false)
+            osa(pauseScript(for: player), requiring: player) { [weak self] out, err in
                 guard let self else { return }
-                self.noteCommandResult(err, player: player)
-                self.osa(self.seekScript(for: player, to: time), requiring: player) { _, _ in }
+                self.noteCommandResult(self.commandError(out, err), player: player)
+                self.osa(self.seekScript(for: player, to: time), requiring: player) { out2, err2 in
+                    self.noteCommandResult(self.commandError(out2, err2), player: player)
+                    self.markRemoteCommandSettled()
+                }
             }
         case "seek":
             let playing = msg.playing ?? false
-            osa(
-                seekScript(for: player, to: time + (playing ? latency : 0)),
-                requiring: player
-            ) { [weak self] _, err in
+            let target = time + (playing ? latency : 0)
+            armSuppression(expecting: msg.playing)
+            pendingSeekTarget = (target, Date())
+            osa(seekScript(for: player, to: target), requiring: player) { [weak self] out, err in
                 guard let self else { return }
-                self.noteCommandResult(err, player: player)
+                self.noteCommandResult(self.commandError(out, err), player: player)
                 let follow = playing ? self.playScript(for: player) : self.pauseScript(for: player)
-                self.osa(follow, requiring: player) { _, _ in }
+                self.osa(follow, requiring: player) { out2, err2 in
+                    self.noteCommandResult(self.commandError(out2, err2), player: player)
+                    self.markRemoteCommandSettled()
+                }
             }
         case "tick":
+            // Deliberately NO up-front suppression: a tick that corrects
+            // nothing must have zero side effects on local change detection.
+            // Blinding it for 2s per received tick left 3-person rooms unable
+            // to broadcast their own pauses most of the time.
             osa(getScript(for: player), requiring: player) { [weak self] out, _ in
                 guard let self, let out, out != "none",
-                      let media = self.parseMediaResult(out), media.playing else { return }
+                      let media = self.parseMediaResult(out) else { return }
+                if msg.playing == false, media.playing, allowPauseRepair {
+                    // The sender is paused, we are playing: their pause never
+                    // reached us. Repair instead of drifting ahead forever.
+                    DispatchQueue.main.async {
+                        self.armSuppression(expecting: false)
+                        self.pendingSeekTarget = (time, Date())
+                        self.wakePolling()
+                    }
+                    self.osa(self.pauseScript(for: player), requiring: player) { pOut, pErr in
+                        self.noteCommandResult(self.commandError(pOut, pErr), player: player)
+                        self.osa(self.seekScript(for: player, to: time), requiring: player) { sOut, sErr in
+                            self.noteCommandResult(self.commandError(sOut, sErr), player: player)
+                            self.markRemoteCommandSettled()
+                        }
+                    }
+                    return
+                }
+                guard media.playing else { return }
                 let cur = media.time
                 let target = time + latency
                 if abs(cur - target) > 2 {
-                    self.osa(
-                        self.seekScript(for: player, to: target),
-                        requiring: player
-                    ) { _, _ in }
+                    // Corrections that never stick mean the player ignores
+                    // seeks (e.g. DRM in the TV app) — after three in a row,
+                    // tell the user instead of retrying invisibly.
+                    self.driftCorrectionStreak += 1
+                    if self.driftCorrectionStreak >= 3 {
+                        self.noteCommandResult("SOFA_SEEK_INEFFECTIVE", player: player)
+                    }
+                    DispatchQueue.main.async {
+                        self.armSuppression(expecting: nil)
+                        self.pendingSeekTarget = (target, Date())
+                        self.wakePolling()
+                    }
+                    self.osa(self.seekScript(for: player, to: target), requiring: player) { sOut, sErr in
+                        self.noteCommandResult(self.commandError(sOut, sErr), player: player)
+                        self.markRemoteCommandSettled()
+                    }
+                } else {
+                    self.driftCorrectionStreak = 0
                 }
             }
         default:
             break
         }
-        lastState = nil // resync baseline on next poll
         wakePolling()
     }
 
