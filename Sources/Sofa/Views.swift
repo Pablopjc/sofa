@@ -1452,8 +1452,8 @@ struct PlayerSetupBanner: View {
         if isBlocked {
             if player == .safari {
                 return [
-                    "Safari → Settings → Advanced → turn on “Show features for web developers”.",
-                    "In the new Develop menu, enable “Allow JavaScript from Apple Events”.",
+                    SystemUINames.safariAdvancedStep,
+                    "In the Develop menu, enable “Allow JavaScript from Apple Events”.",
                     "Keep the video tab in front.",
                 ]
             }
@@ -1463,7 +1463,7 @@ struct PlayerSetupBanner: View {
             ]
         }
         return [
-            "Open System Settings → Privacy & Security → Automation.",
+            "Open \(SystemUINames.automationPath).",
             "Under Sofa, turn on \(player.shortLabel).",
         ]
     }

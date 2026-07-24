@@ -920,7 +920,7 @@ final class PlayerBridge {
         lastCommandErrorReportedAt = now
         let hint: String
         if error.contains("1743") || error.localizedCaseInsensitiveContains("not authorized") {
-            hint = "macOS blocked Sofa from controlling \(player.shortLabel). Fix it in System Settings → Privacy & Security → Automation."
+            hint = "macOS blocked Sofa from controlling \(player.shortLabel). Fix it in \(SystemUINames.automationPath)."
         } else if error.contains("timed out") {
             hint = "\(player.shortLabel) didn’t respond — sync may drift until it recovers."
         } else if error == "SOFA_PLAYER_NOT_OPEN" {

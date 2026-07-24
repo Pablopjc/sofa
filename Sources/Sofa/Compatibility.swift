@@ -87,6 +87,40 @@ struct SofaMark: View {
     }
 }
 
+// MARK: - Naming the system UI the user is actually looking at
+
+enum SystemUINames {
+    /// Ventura renamed System Preferences to System Settings and reorganised
+    /// its panes. Setup instructions that name the wrong one send a Monterey
+    /// user hunting for a menu that does not exist.
+    static var settingsApp: String {
+        if #available(macOS 13.0, *) { return "System Settings" }
+        return "System Preferences"
+    }
+
+    /// Privacy lives in "Privacy & Security" from Ventura on, and in
+    /// "Security & Privacy → Privacy" before that.
+    static var privacyPane: String {
+        if #available(macOS 13.0, *) { return "Privacy & Security" }
+        return "Security & Privacy → Privacy"
+    }
+
+    /// Safari 17 (macOS 14) renamed Preferences to Settings and replaced the
+    /// "Show Develop menu in menu bar" checkbox with "Show features for web
+    /// developers". Sofa's browser sync is unreachable if we name the wrong one.
+    static var safariAdvancedStep: String {
+        if #available(macOS 14.0, *) {
+            return "Safari → Settings → Advanced → turn on “Show features for web developers”."
+        }
+        return "Safari → Preferences → Advanced → tick “Show Develop menu in menu bar”."
+    }
+
+    /// Where Automation approval lives, spelled for this system.
+    static var automationPath: String {
+        "\(settingsApp) → \(privacyPane) → Automation"
+    }
+}
+
 // MARK: - Feature availability
 
 enum SofaFeature {
