@@ -273,7 +273,6 @@ struct WelcomeView: View {
                     .padding(.vertical, 5)
             }
             .sofaProminentButton()
-            .buttonBorderShape(.capsule)
             .controlSize(.large)
             .padding(.top, 30)
 
@@ -346,7 +345,7 @@ struct IdleView: View {
             VStack(spacing: 4) {
                 Image(systemName: "sofa.fill")
                     .font(.system(size: 32, weight: .medium))
-                    .foregroundStyle(Color.sofaBlue.gradient)
+                    .foregroundStyle(Color.sofaBlue.sofaGradient)
                 Text("Movie nights, together — apart.")
                     .font(.system(size: 15, weight: .semibold))
                 Text("Play, pause and skip stay perfectly in sync\nwith everyone in your party.")
@@ -382,7 +381,6 @@ struct IdleView: View {
                     .padding(.vertical, 5)
             }
             .sofaProminentButton()
-            .buttonBorderShape(.capsule)
             .controlSize(.large)
             .disabled(state.hosting || state.joining)
 
@@ -417,7 +415,6 @@ struct IdleView: View {
                         state.join()
                     }
                         .sofaGlassButton()
-                        .buttonBorderShape(.capsule)
                         .disabled(state.hosting || state.joining)
                 }
                 if let err = state.joinError {
@@ -457,7 +454,7 @@ struct AvatarView: View {
         let letter = String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased()
         let tint = Self.palette[Int(Self.stableHash(name) % UInt64(Self.palette.count))]
         Circle()
-            .fill(tint.gradient)
+            .fill(tint.sofaGradient)
             .frame(width: size, height: size)
             .overlay(
                 Text(letter.isEmpty ? "?" : letter)
@@ -592,11 +589,11 @@ struct InviteCard: View {
             Label("Someone's joining…", systemImage: "person.crop.circle.badge.clock")
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(Color.sofaBlue)
-                .symbolEffect(.pulse)
+                .sofaPulse()
         } else {
             Label("Waiting for your friend to join…", systemImage: "hourglass")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
-                .symbolEffect(.pulse)
+                .sofaPulse()
         }
     }
 
@@ -621,7 +618,7 @@ struct InviteCard: View {
                 Label(state.inviteLinkJustCopied ? "Copied" : "Copy",
                       systemImage: state.inviteLinkJustCopied ? "checkmark" : "doc.on.doc")
                     .font(.system(size: 12))
-                    .contentTransition(.symbolEffect(.replace))
+                    .sofaSymbolReplace()
             }
             .buttonStyle(SofaSecondaryCapsuleButtonStyle())
             .help("Copy the invite link to paste anywhere")
@@ -712,7 +709,7 @@ struct InviteCard: View {
                     .font(.system(size: 12.5, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 2)
-                    .contentTransition(.symbolEffect(.replace))
+                    .sofaSymbolReplace()
             }
             .sofaProminentButton()
             ShareButton(link: state.inviteLink, message: state.inviteShareText)
@@ -913,7 +910,6 @@ struct IdentityFriendsRow: View {
                         }
                     }
                     .sofaGlassButton()
-                    .buttonBorderShape(.capsule)
                     .disabled(social.friendLink.isEmpty)
                     .help("Copy your friend link — friends who add it can invite you directly")
                 }
@@ -1790,7 +1786,7 @@ struct SliderRow: View {
             Slider(value: $value, in: range) { _ in
                 onChange(value)
             }
-            .onChange(of: value) { _, v in onChange(v) }
+            .sofaOnChange(of: value) { v in onChange(v) }
             .tint(Color.sofaBlue)
             Text("\(Int(value))\(suffix)")
                 .font(.system(size: 11)).foregroundStyle(.secondary)

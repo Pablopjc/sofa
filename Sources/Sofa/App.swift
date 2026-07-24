@@ -126,13 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = true
-        panel.collectionBehavior = [
-            .canJoinAllApplications,
-            .canJoinAllSpaces,
-            .fullScreenAuxiliary,
-            .stationary,
-            .ignoresCycle,
-        ]
+        panel.collectionBehavior = .sofaFloatingPanel
 
         Publishers.CombineLatest3(
             AppState.shared.$theaterActive,

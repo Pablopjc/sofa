@@ -39,13 +39,7 @@ final class FakeCall: ObservableObject {
             panel.backgroundColor = .clear
             panel.hasShadow = true
             panel.isMovableByWindowBackground = true
-            panel.collectionBehavior = [
-                .canJoinAllApplications,
-                .canJoinAllSpaces,
-                .fullScreenAuxiliary,
-                .stationary,
-                .ignoresCycle,
-            ]
+            panel.collectionBehavior = .sofaFloatingPanel
             panel.isReleasedWhenClosed = false
             panel.contentView = NSHostingView(rootView: FakeCallView())
             window = panel

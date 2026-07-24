@@ -3,11 +3,28 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Sofa deploys to macOS 12 (see Sources/Sofa/Compatibility.swift). Linking the
+# x86_64 slice against a pre-13 target needs libswiftCompatibility56.a, and the
+# Command Line Tools ship that library for arm64 only — with CLT selected, the
+# Intel half fails to link with "symbol(s) not found". Xcode's toolchain has
+# both slices, so prefer it and fall back to whatever is selected.
+SWIFT="swift"
+for x in /Applications/Xcode.app /Applications/Xcode-beta.app; do
+  CANDIDATE="$x/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift"
+  if [ -x "$CANDIDATE" ] && lipo -info \
+      "$x/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx/libswiftCompatibility56.a" \
+      2>/dev/null | grep -q x86_64; then
+    SWIFT="$CANDIDATE"
+    export DEVELOPER_DIR="$x/Contents/Developer"
+  fi
+done
+echo "▸ Toolchain: $SWIFT"
+
 echo "▸ Compiling (release, universal arm64 + x86_64)…"
-swift build -c release --arch arm64 --arch x86_64 2>&1 | tail -1
+"$SWIFT" build -c release --arch arm64 --arch x86_64 2>&1 | tail -1
 
 APP="dist/Sofa.app"
-BIN_DIR=$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)
+BIN_DIR=$("$SWIFT" build -c release --arch arm64 --arch x86_64 --show-bin-path)
 BIN="$BIN_DIR/Sofa"
 [ -f "$BIN" ] || { echo "binary not found at $BIN"; exit 1; }
 lipo -info "$BIN" | sed 's/^/▸ /'

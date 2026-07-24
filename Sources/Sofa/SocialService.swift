@@ -130,7 +130,7 @@ final class SocialService: ObservableObject {
         guard ready else { return }
         nameUpdateTask?.cancel()
         nameUpdateTask = Task {
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await Task.sleep(seconds: 0.5)
             guard !Task.isCancelled else { return }
             do {
                 _ = try await request(path: "/me", method: "PATCH", body: ["name": name]) as Profile
@@ -220,7 +220,7 @@ final class SocialService: ObservableObject {
         )
         simulatedInviteFriends[invite.id] = friend
         Task {
-            try? await Task.sleep(for: .milliseconds(1200))
+            try? await Task.sleep(seconds: 1.2)
             // The party may have ended (or the friend been removed) mid-beat.
             guard state.isHosting, simulatedInviteFriends[invite.id] != nil else { return }
             if !invitations.contains(where: { $0.id == invite.id }) {
@@ -309,7 +309,7 @@ final class SocialService: ObservableObject {
             let delay = retryDelay(attempt: bootstrapRetryAttempt)
             bootstrapRetryAttempt += 1
             bootstrapRetryTask = Task {
-                try? await Task.sleep(for: delay)
+                try? await Task.sleep(seconds: delay)
                 guard !Task.isCancelled else { return }
                 await bootstrap()
             }
@@ -406,7 +406,7 @@ final class SocialService: ObservableObject {
         let delay = retryDelay(attempt: reconnectAttempt)
         reconnectAttempt += 1
         reconnectTask = Task {
-            try? await Task.sleep(for: delay)
+            try? await Task.sleep(seconds: delay)
             guard !Task.isCancelled else { return }
             reconnectTask = nil
             connectEvents()
@@ -416,10 +416,9 @@ final class SocialService: ObservableObject {
 
     /// Back off aggressively while offline or while the relay is unavailable.
     /// Jitter prevents every sleeping Mac from reconnecting on the same second.
-    private func retryDelay(attempt: Int) -> Duration {
+    private func retryDelay(attempt: Int) -> Double {
         let seconds = [5.0, 15.0, 30.0, 60.0, 300.0][min(attempt, 4)]
-        let jittered = seconds * Double.random(in: 0.85...1.15)
-        return .milliseconds(Int64(jittered * 1_000))
+        return seconds * Double.random(in: 0.85...1.15)
     }
 
     private func configureNotifications() {
