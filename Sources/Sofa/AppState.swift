@@ -765,7 +765,11 @@ final class AppState: ObservableObject {
         let call = WindowArranger.runningCallApp(in: runningIDs)
         if call?.bundleID != detectedCallApp?.bundleID {
             detectedCallApp = call
-            if call?.bundleID == "com.apple.FaceTime", callVolume < 99.5 {
+            // Only chase a stored level where the process tap actually exists.
+            // A value persisted on a newer Mac (or before an OS downgrade) must
+            // not fire an unsolicited "requires macOS 14.2" toast on every call.
+            if call?.bundleID == "com.apple.FaceTime", callVolume < 99.5,
+               SofaFeature.callVolumeControl {
                 scheduleCallVolume(callVolume)
             } else {
                 stopCallAudioProcessor()

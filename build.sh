@@ -8,16 +8,26 @@ cd "$(dirname "$0")"
 # Command Line Tools ship that library for arm64 only — with CLT selected, the
 # Intel half fails to link with "symbol(s) not found". Xcode's toolchain has
 # both slices, so prefer it and fall back to whatever is selected.
+# Release toolchain first, beta only as a fallback — the shipped universal
+# binary should not come from a beta compiler unless that is the only option.
+# SOFA_XCODE=/path/to/Xcode.app overrides the search entirely.
 SWIFT="swift"
-for x in /Applications/Xcode.app /Applications/Xcode-beta.app; do
+for x in ${SOFA_XCODE:+"$SOFA_XCODE"} /Applications/Xcode.app /Applications/Xcode-beta.app; do
   CANDIDATE="$x/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift"
   if [ -x "$CANDIDATE" ] && lipo -info \
       "$x/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx/libswiftCompatibility56.a" \
       2>/dev/null | grep -q x86_64; then
     SWIFT="$CANDIDATE"
     export DEVELOPER_DIR="$x/Contents/Developer"
+    break   # first match wins, so a stable Xcode beats an installed beta
   fi
 done
+if [ "$SWIFT" = "swift" ]; then
+  echo "▸ WARNING: no Xcode toolchain with an x86_64 libswiftCompatibility56.a."
+  echo "  The Command Line Tools ship arm64 only, so the Intel slice will fail"
+  echo "  to link against the macOS 12 deployment target. Install Xcode, or set"
+  echo "  SOFA_XCODE=/path/to/Xcode.app."
+fi
 echo "▸ Toolchain: $SWIFT"
 
 echo "▸ Compiling (release, universal arm64 + x86_64)…"

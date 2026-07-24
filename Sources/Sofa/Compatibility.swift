@@ -30,19 +30,93 @@ extension Task where Success == Never, Failure == Never {
     }
 }
 
+// MARK: - Branding
+
+enum SofaGlyph {
+    /// `sofa.fill` arrived with SF Symbols 4 (macOS 13). On Monterey
+    /// `Image(systemName:)` would silently draw nothing, leaving a hole beside
+    /// the wordmark and on the idle screen — so resolve the symbol at runtime
+    /// and fall back to Sofa's own bundled armchair artwork, which stays on
+    /// brand. Detected rather than version-gated: the question that matters is
+    /// "does this glyph exist here", not "which macOS is this".
+    static let systemSymbolAvailable: Bool =
+        NSImage(systemSymbolName: "sofa.fill", accessibilityDescription: "Sofa") != nil
+
+    /// The bundled menu-bar artwork, as a template so it tints like a symbol.
+    static let bundledMark: NSImage? = {
+        guard let url = Bundle.main.url(forResource: "traySofaTemplate", withExtension: "png"),
+              let image = NSImage(contentsOf: url) else { return nil }
+        if let retinaURL = Bundle.main.url(forResource: "traySofaTemplate@2x", withExtension: "png"),
+           let retina = NSImageRep(contentsOf: retinaURL) {
+            retina.size = image.size
+            image.addRepresentation(retina)
+        }
+        image.isTemplate = true
+        return image
+    }()
+}
+
+extension View {
+    /// Applies to the fallback image only — the symbol path keeps font sizing.
+    @ViewBuilder fileprivate func sofaGlyphSized(_ pointSize: CGFloat) -> some View {
+        frame(width: pointSize, height: pointSize)
+    }
+}
+
+/// Sofa's mark at a given point size, drawn as an SF Symbol where that symbol
+/// exists and as the bundled artwork where it does not.
+struct SofaMark: View {
+    var pointSize: CGFloat
+    var weight: Font.Weight = .regular
+
+    var body: some View {
+        if SofaGlyph.systemSymbolAvailable {
+            Image(systemName: "sofa.fill")
+                .font(.system(size: pointSize, weight: weight))
+        } else if let mark = SofaGlyph.bundledMark {
+            Image(nsImage: mark)
+                .resizable()
+                .renderingMode(.template)
+                .aspectRatio(contentMode: .fit)
+                .sofaGlyphSized(pointSize)
+        } else {
+            // Last resort: a shape that exists everywhere, never a blank hole.
+            Image(systemName: "tv.fill")
+                .font(.system(size: pointSize, weight: weight))
+        }
+    }
+}
+
+// MARK: - Feature availability
+
+enum SofaFeature {
+    /// Lowering only the FaceTime call needs a Core Audio process tap, which
+    /// arrived in macOS 14.2. The slider must be HIDDEN below that, not merely
+    /// inert: showing a live control that snaps back with an error is worse
+    /// than not offering it.
+    static var callVolumeControl: Bool {
+        if #available(macOS 14.2, *) { return true }
+        return false
+    }
+}
+
 // MARK: - SwiftUI
 
 extension Color {
-    /// `Color.gradient` needs macOS 13. Apple's version is a subtle wash from
-    /// a lightened top to the base colour; the fallback reproduces that shape
-    /// closely enough that the two are hard to tell apart side by side.
+    /// `Color.gradient` needs macOS 13. Apple's version is an OPAQUE luminance
+    /// ramp — lighter at the top, base colour at the bottom. The fallback must
+    /// lighten too, not fade: ramping opacity instead would let the panel show
+    /// through a filled avatar and, on a dark background, invert the highlight
+    /// so the top read darker than the base.
     var sofaGradient: AnyShapeStyle {
         if #available(macOS 13.0, *) {
             return AnyShapeStyle(gradient)
         }
+        let base = NSColor(self).usingColorSpace(.sRGB) ?? NSColor(self)
+        let lightened = base.blended(withFraction: 0.18, of: .white) ?? base
         return AnyShapeStyle(
             LinearGradient(
-                colors: [opacity(0.92), self],
+                colors: [Color(nsColor: lightened), self],
                 startPoint: .top,
                 endPoint: .bottom
             )

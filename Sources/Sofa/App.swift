@@ -236,7 +236,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private static func trayIcon(named base: String) -> NSImage? {
         guard let url = Bundle.main.url(forResource: base, withExtension: "png"),
               let img = NSImage(contentsOf: url) else {
+            // "sofa.fill" is SF Symbols 4 (macOS 13+): on Monterey it returns
+            // nil, which would leave the status item with NO image at all — and
+            // for an accessory app the status item is the only way in. Fall
+            // back to a glyph that exists everywhere.
             let fallback = NSImage(systemSymbolName: "sofa.fill", accessibilityDescription: "Sofa")
+                ?? NSImage(systemSymbolName: "tv.fill", accessibilityDescription: "Sofa")
             fallback?.isTemplate = true
             return fallback
         }

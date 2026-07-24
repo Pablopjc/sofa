@@ -153,7 +153,7 @@ struct TitleBar: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "sofa.fill")
+            SofaMark(pointSize: 13)
                 .foregroundStyle(.secondary)
             Text("Sofa").font(.system(size: 13, weight: .semibold))
 
@@ -343,8 +343,7 @@ struct IdleView: View {
         VStack(spacing: 9) {
             // Hero
             VStack(spacing: 4) {
-                Image(systemName: "sofa.fill")
-                    .font(.system(size: 32, weight: .medium))
+                SofaMark(pointSize: 32, weight: .medium)
                     .foregroundStyle(Color.sofaBlue.sofaGradient)
                 Text("Movie nights, together — apart.")
                     .font(.system(size: 15, weight: .semibold))
@@ -1755,7 +1754,11 @@ struct AudioCard: View {
     var body: some View {
         Card {
             SectionLabel(text: "Audio")
-            if state.detectedCallApp?.bundleID == "com.apple.FaceTime" {
+            // Below macOS 14.2 there is no process tap, so the call slider would
+            // be a live control that snaps back with an error — hide it instead.
+            let callControl = SofaFeature.callVolumeControl
+                && state.detectedCallApp?.bundleID == "com.apple.FaceTime"
+            if callControl {
                 SliderRow(label: "Call", value: $state.callVolume, range: 0...100, suffix: "%") { v in
                     state.setCallVolume(v)
                 }
@@ -1763,9 +1766,11 @@ struct AudioCard: View {
             SliderRow(label: "Mac", value: $state.systemVolume, range: 0...100, suffix: "%") { v in
                 SystemVolume.set(Int(v))
             }
-            Text(state.detectedCallApp?.bundleID == "com.apple.FaceTime"
+            Text(callControl
                  ? "Call adjusts only FaceTime — processed locally, never recorded or sent."
-                 : "Start a FaceTime call to control its volume separately.")
+                 : SofaFeature.callVolumeControl
+                   ? "Start a FaceTime call to control its volume separately."
+                   : "Controlling the call separately needs macOS 14.2 or later.")
                 .font(.system(size: 11)).foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
