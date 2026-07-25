@@ -184,11 +184,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: panel, queue: .main
-        ) { _ in
+        ) { [weak self] _ in
             // Behave like a popover: hide on blur unless media is loaded/playing.
+            // Deferred one turn so a click on the tray icon (which itself makes
+            // the panel resign key just before togglePanel reopens it) doesn't
+            // still queue up this close — re-check key status at execution
+            // time, since by then a fresh reopen would have restored it.
             DispatchQueue.main.async {
+                guard let panel = self?.panel, !panel.isKeyWindow else { return }
                 if !AppState.shared.mediaActive {
-                    self.panel.orderOut(nil)
+                    panel.orderOut(nil)
                 }
             }
         }
@@ -297,7 +302,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // MARK: - Panel toggling
 
     @objc private func togglePanel() {
-        if panel.isVisible {
+        // isVisible alone isn't enough: a panel can be ordered in but not the
+        // focused surface (e.g. it lost key status to another app or window
+        // without yet being closed). Only treat a click as "dismiss" when the
+        // panel is the thing actually in front; otherwise always bring it
+        // forward, so a click never silently does nothing.
+        if panel.isVisible, panel.isKeyWindow {
             panel.orderOut(nil)
         } else {
             showPanel()
