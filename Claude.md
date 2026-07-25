@@ -216,11 +216,35 @@ el aviso dentro de la app (panel + `PartyInvitationCard` + sonido) se mantiene
 como respaldo. Sonda de diagnóstico: `SOFA_NOTIFY_TEST=1
 /Applications/Sofa.app/Contents/MacOS/Sofa` (modo dev en `main.swift`).
 
-**El helper de Theater tiene versión acoplada.** `PlayerBridge.swift` y
-`BrowserExtension/content.js` comparten un marcador (`0.1.30-efficiency`) que
-usan para saber si el helper inyectado está al día. **Si cambias el helper,
-cambia el marcador en los dos sitios**; si no, o no se actualiza o se reinyecta
-en bucle. No tiene que coincidir con la versión de la app.
+**El helper de Theater tiene versión acoplada, y ya no se escribe dos veces.**
+El marcador (`VERSION`, hoy `0.1.71-generic`) vive **solo** en
+`BrowserExtension/content.js`; `PlayerBridge.theaterHelperVersion` lo lee de ahí
+con una regex (`VERSION\s*=\s*"…"`) y el nombre del evento se deriva de él en los
+dos lados. Al cambiar el helper basta con subir esa constante. Cuidado con
+romper la regex: si deja de casar, Sofa despacha un evento que nadie escucha y
+**Theater muere en todos los sitios a la vez, en silencio** (así se rompió
+0.1.69). No tiene que coincidir con la versión de la app.
+
+**El mismo predicado escrito dos veces es el fallo recurrente de Theater.**
+0.1.69 hizo Theater genérico (cualquier servicio, no solo los tres enseñados)
+pero solo actualizó una de las dos copias de "¿la página está en un fullscreen
+que contiene al reproductor?": la del sondeo. La otra —la que decide si el botón
+Theater se enciende y si el clic procede— conservó la lista blanca de
+youtube/netflix/disneyplus, así que en **HBO Max** Sofa insistía en "pon el vídeo
+en pantalla completa" por mucho que ya lo estuviera (arreglado en 0.1.71). Ahora
+hay una sola `pageFullscreenTargetJS` (`function sofaFSTarget()`) que usan tanto
+`browserGetJS` como `compatiblePageFullscreenJS`. Si añades una tercera pregunta
+sobre fullscreen, reutilízala; no la copies.
+
+**Reproductores cuyo `<video>` cuelga directo del elemento en fullscreen**
+(HBO Max) necesitan dos reglas de anchura —el vídeo y sus hermanos, vía
+`data-sofa-theater-generic-box`— y gana la segunda por orden. Por eso
+`content.js` recoge **todas** las reglas con `calc()` (`findSizingRules`) en vez
+de la primera: con una sola, el tirador movía la costura y la imagen no se movía.
+Y el tirador (la píldora gris) no puede dibujarse con `::after` sobre el elemento
+dimensionado cuando ese elemento es el `<video>`: un elemento reemplazado no
+genera contenido. Se dibuja sobre el contenedor, anclado a la costura con el
+mismo `calc()`.
 
 ---
 
@@ -353,8 +377,8 @@ Flujo obligatorio:
 
 1. **Subir versión** en `Info.plist` (los dos campos, iguales) y en
    `BrowserExtension/manifest.json`. Incremento de `0.0.1`: tras `0.1.34` va
-   `0.1.35`. Si cambia el helper Theater, actualizar su marcador en
-   `content.js` **y** `PlayerBridge.swift` (§4).
+   `0.1.35`. Si cambia el helper Theater, subir `VERSION` en `content.js` —
+   solo ahí; Swift la lee de ese archivo (§4).
 2. **Verificar**:
 
    ```bash

@@ -80,6 +80,31 @@ final class PlayerBridge {
         "var pool=vs.filter(function(v){return !vpreview(v)});if(!pool.length)return null;" +
         "pool.sort(function(a,b){return vscore(b)-vscore(a)});return pool[0]}"
 
+    /// One definition of "the page is in a fullscreen that holds the site
+    /// player", returning that player element or null. The playback poll and
+    /// the Theater gate both ask this question and must never answer it
+    /// differently.
+    ///
+    /// It used to be written twice. When 0.1.69 made Theater generic, only the
+    /// poll's copy learned the structural fallback below; the gate kept the
+    /// three-host allowlist. So on every other service — HBO Max — Sofa told
+    /// the viewer to "put the video in full screen first" no matter how
+    /// fullscreen it already was, and the Theater button stayed dark. Defining
+    /// it once is what stops that drift, the same lesson as the helper VERSION.
+    private static let pageFullscreenTargetJS =
+        "function sofaFSTarget(){" +
+        "var f=document.fullscreenElement||document.webkitFullscreenElement;if(!f)return null;" +
+        "var h=location.hostname.toLowerCase(),x=null;" +
+        "if(h==='youtube.com'||h.endsWith('.youtube.com'))x=document.querySelector('#movie_player');" +
+        "else if(h==='netflix.com'||h.endsWith('.netflix.com'))x=document.querySelector('.watch-video--player-view,[data-uia=watch-video]');" +
+        "else if(h==='disneyplus.com'||h.endsWith('.disneyplus.com'))x=document.querySelector('#hudson-wrapper,.video_view--theater,.hudson-container,.player-container-root,.btm-media-player');" +
+        // Any other service — and any named one whose markup moved: a fullscreen
+        // element that contains a <video> IS the player. Asking the DOM what it
+        // holds, rather than knowing a selector per site, is what lets Theater
+        // work on a service nobody has taught it.
+        "if(!x&&f.querySelector&&f.querySelector('video'))x=f;if(!x)return null;" +
+        "return (f===document.documentElement||f===document.body||f===x||f.contains(x)||x.contains(f))?x:null}"
+
     // Also grabs the page's og:image (the poster the site advertises for link
     // previews) so Sofa can show the actual content instead of the app icon —
     // same idea as Control Center's Now Playing artwork. Meta tags are scanned
@@ -108,17 +133,8 @@ final class PlayerBridge {
         "if(location.hostname.indexOf('youtube')>-1){var ap=document.querySelector('#movie_player');" +
         "if(ap&&(ap.className.indexOf('ad-showing')>-1||ap.className.indexOf('ad-interrupting')>-1))return 'none'}" +
         "var p=onNF?nfp():null;var tm=p?p.getCurrentTime()/1000:(v?v.currentTime:0);" +
-        "function fsok(){var f=document.fullscreenElement||document.webkitFullscreenElement;if(!f)return false;" +
-        "var h=location.hostname.toLowerCase(),x=null;" +
-        "if(h==='youtube.com'||h.endsWith('.youtube.com'))x=document.querySelector('#movie_player');" +
-        "else if(h==='netflix.com'||h.endsWith('.netflix.com'))x=document.querySelector('.watch-video--player-view,[data-uia=watch-video]');" +
-        "else if(h==='disneyplus.com'||h.endsWith('.disneyplus.com'))x=document.querySelector('#hudson-wrapper,.video_view--theater,.hudson-container,.player-container-root,.btm-media-player');" +
-        // Any other service: a fullscreen element that contains a <video> IS the
-        // player. Asking the DOM what it holds, rather than knowing a selector
-        // per site, is what lets Theater work on a service nobody has taught it.
-        "if(!x&&f.querySelector&&f.querySelector('video'))x=f;" +
-        "return !!x&&(f===document.documentElement||f===document.body||f===x||f.contains(x)||x.contains(f))}" +
-        "if(!v&&!p)return 'none';var data={time:tm,playing:v?!v.paused:false,poster:poster,title:t,url:mediaURL,fullscreen:fsok()};" +
+        "\(pageFullscreenTargetJS)" +
+        "if(!v&&!p)return 'none';var data={time:tm,playing:v?!v.paused:false,poster:poster,title:t,url:mediaURL,fullscreen:!!sofaFSTarget()};" +
         "return 'SOFAJSON|'+encodeURIComponent(JSON.stringify(data))})()"
     }
 
@@ -211,12 +227,8 @@ final class PlayerBridge {
     /// player. Theater must preserve it for Sofa-owned calls, or leave it first
     /// when arranging a third-party call on the desktop.
     private static let compatiblePageFullscreenJS =
-        "(function(){var f=document.fullscreenElement||document.webkitFullscreenElement;" +
-        "if(!f)return 'SOFA_FALSE';var h=location.hostname.toLowerCase(),t=null;" +
-        "if(h==='youtube.com'||h.endsWith('.youtube.com'))t=document.querySelector('#movie_player');" +
-        "else if(h==='netflix.com'||h.endsWith('.netflix.com'))t=document.querySelector('.watch-video--player-view,[data-uia=watch-video]');" +
-        "else if(h==='disneyplus.com'||h.endsWith('.disneyplus.com'))t=document.querySelector('#hudson-wrapper,.video_view--theater,.hudson-container,.player-container-root,.btm-media-player');" +
-        "if(!t)return 'SOFA_FALSE';return (f===document.documentElement||f===document.body||f===t||f.contains(t)||t.contains(f))?'SOFA_TRUE':'SOFA_FALSE'})()"
+        "(function(){\(pageFullscreenTargetJS)" +
+        "return sofaFSTarget()?'SOFA_TRUE':'SOFA_FALSE'})()"
 
     /// Captures Chrome's stable tab id with the result. Safari does not expose a
     /// useful stable tab identifier, so its exit script searches for our private

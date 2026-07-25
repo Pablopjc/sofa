@@ -1,8 +1,13 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.70-generic";
-  const EVENT_NAME = "sofa-theater-command-0.1.70-generic";
+  const VERSION = "0.1.71-generic";
+  // Derived, never written out a second time: Sofa builds the event name it
+  // dispatches as "sofa-theater-command-" + the VERSION it parses out of this
+  // file, so a hand-typed copy that lags a version bump is a listener bound to
+  // an event nobody fires — which is exactly how Theater died on every site at
+  // 0.1.69.
+  const EVENT_NAME = `sofa-theater-command-${VERSION}`;
   const READY_ATTR = "data-sofa-theater-helper";
   const COMMAND_ATTR = "data-sofa-theater-command";
   const STATUS_ATTR = "data-sofa-theater-status";
@@ -53,7 +58,7 @@
   let refreshFrame = 0;
   let refreshObserver = null;
   let activeListenersInstalled = false;
-  let sizingRule = null;
+  let sizingRules = [];
   let resizePointerID = null;
   let pendingReservedWidth = null;
   let resizeFrame = 0;
@@ -305,6 +310,31 @@
           height: 100% !important;
           object-fit: contain !important;
         }
+        /* The grip cannot be drawn on the sized element when that element is
+           the <video>: a replaced element renders no ::after, so the pill was
+           simply invisible on those players. Draw it on the container, parked
+           at the seam by the same calc the widths use, so one update moves
+           both. */
+        html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${GENERIC_BOX_ATTR}]::after {
+          content: "" !important;
+          position: absolute !important;
+          left: ${width} !important;
+          top: 50% !important;
+          width: 6px !important;
+          height: 64px !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          border: 1px solid rgba(28, 28, 30, 0.34) !important;
+          border-radius: 999px !important;
+          box-sizing: border-box !important;
+          background: rgba(205, 205, 210, 0.82) !important;
+          box-shadow: 0 1px 5px rgba(0, 0, 0, 0.52) !important;
+          transform: translate(4px, -50%) !important;
+          pointer-events: none !important;
+          visibility: visible !important;
+          opacity: 1 !important;
+          z-index: 2147483647 !important;
+        }
       `;
     }
 
@@ -374,17 +404,29 @@
     `;
   }
 
-  function findSizingRule() {
+  /// EVERY rule the seam drives, not just the first one found.
+  ///
+  /// A player whose <video> is a direct child of the fullscreen element (HBO
+  /// Max) needs two width rules — the video and its siblings — and the later,
+  /// equally specific one wins. Updating only the first meant the pointer could
+  /// drag the seam and the picture never moved, and a window resize left the
+  /// column at its old width. `left` is collected too, for the grip that has to
+  /// be drawn on the container.
+  function findSizingRules() {
     const style = document.getElementById(STYLE_ID);
     const rules = style?.sheet?.cssRules;
-    if (!rules) return null;
+    if (!rules) return [];
+    const sized = [];
     for (const rule of rules) {
-      if (rule.style?.getPropertyValue("width")?.includes("calc(")) return rule;
+      if (!rule.style) continue;
+      const width = !!rule.style.getPropertyValue("width")?.includes("calc(");
+      const left = !!rule.style.getPropertyValue("left")?.includes("calc(");
+      if (width || left) sized.push({ rule, width, left });
     }
-    return null;
+    return sized;
   }
 
-  function ensureSizingRule() {
+  function ensureSizingRules() {
     let style = document.getElementById(STYLE_ID);
     if (!style?.isConnected && activeKind && hasReservation()) {
       style = document.createElement("style");
@@ -392,18 +434,22 @@
       style.textContent = stylesheet(activeKind);
       (document.head || html).appendChild(style);
     }
-    if (!style?.isConnected) return null;
-    if (!sizingRule?.style || sizingRule.parentStyleSheet !== style.sheet) {
-      sizingRule = findSizingRule();
+    if (!style?.isConnected) return [];
+    if (!sizingRules.length || sizingRules[0].rule.parentStyleSheet !== style.sheet) {
+      sizingRules = findSizingRules();
     }
-    return sizingRule;
+    return sizingRules;
   }
 
   function setReservedWidthCSS(width) {
-    const rule = ensureSizingRule();
-    if (!rule?.style || !activeKind) return false;
+    const sized = ensureSizingRules();
+    if (!sized.length || !activeKind) return false;
     const base = fillsNatively(activeKind) ? "100%" : "100vw";
-    rule.style.setProperty("width", `calc(${base} - ${width}px)`, "important");
+    const seam = `calc(${base} - ${width}px)`;
+    for (const entry of sized) {
+      if (entry.width) entry.rule.style.setProperty("width", seam, "important");
+      if (entry.left) entry.rule.style.setProperty("left", seam, "important");
+    }
     return true;
   }
 
@@ -629,7 +675,7 @@
     activeKind = null;
     reservedWidth = 0;
     autoReserve = false;
-    sizingRule = null;
+    sizingRules = [];
     if (notifyResize && layoutNeedsResize) {
       try { window.dispatchEvent(new Event("resize")); } catch (_) {}
       setTimeout(() => {
@@ -681,7 +727,7 @@
       style.id = STYLE_ID;
       style.textContent = css;
       (document.head || html).appendChild(style);
-      sizingRule = findSizingRule();
+      sizingRules = findSizingRules();
     }
 
     html.setAttribute(ACTIVE_ATTR, kind);
