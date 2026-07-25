@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.69-generic";
-  const EVENT_NAME = "sofa-theater-command-0.1.69-generic";
+  const VERSION = "0.1.70-generic";
+  const EVENT_NAME = "sofa-theater-command-0.1.70-generic";
   const READY_ATTR = "data-sofa-theater-helper";
   const COMMAND_ATTR = "data-sofa-theater-command";
   const STATUS_ATTR = "data-sofa-theater-status";
@@ -11,6 +11,9 @@
   const YOUTUBE_ATTR = "data-sofa-theater-youtube";
   const DISNEY_ATTR = "data-sofa-theater-disney";
   const GENERIC_ATTR = "data-sofa-theater-generic";
+  // Set on the fullscreen container only when the <video> is a direct child of
+  // it, so the video's siblings (the control overlay) narrow with the video.
+  const GENERIC_BOX_ATTR = "data-sofa-theater-generic-box";
 
   // The per-site marker attribute Theater puts on the element it width-sizes.
   function markerFor(kind) {
@@ -127,7 +130,20 @@
       child = node;
       node = node.parentElement;
     }
-    return child;
+    // HBO Max puts the <video> straight inside the element it fullscreens, so
+    // there is no wrapper to narrow. Size the video itself; installLayout then
+    // also marks the container so the absolutely-positioned control overlay
+    // sitting next to the video is pulled in with it instead of staying wide.
+    return child || video;
+  }
+
+  /// When the sized element IS the video, its siblings inside the fullscreen
+  /// container must narrow too, or the site's control overlay stays stretched
+  /// across the column reserved for the call.
+  function markGenericBox(target) {
+    if (!target || target.tagName !== "VIDEO") return;
+    const parent = target.parentElement;
+    if (parent) parent.setAttribute(GENERIC_BOX_ATTR, "1");
   }
 
   function findTarget(kind) {
@@ -273,6 +289,19 @@
         }
         [${GENERIC_ATTR}] video {
           width: 100% !important;
+          height: 100% !important;
+          object-fit: contain !important;
+        }
+        /* Video-is-a-direct-child players (HBO Max): narrow every child of the
+           container together, so the control overlay tracks the video instead
+           of staying stretched across the reserved column. Resetting right to
+           auto is what releases an inset:0 overlay so its width takes effect. */
+        [${GENERIC_BOX_ATTR}] > * {
+          left: 0 !important;
+          right: auto !important;
+          width: ${width} !important;
+        }
+        [${GENERIC_BOX_ATTR}] > video {
           height: 100% !important;
           object-fit: contain !important;
         }
@@ -591,6 +620,9 @@
     document.querySelectorAll(`[${GENERIC_ATTR}]`).forEach((element) => {
       element.removeAttribute(GENERIC_ATTR);
     });
+    document.querySelectorAll(`[${GENERIC_BOX_ATTR}]`).forEach((element) => {
+      element.removeAttribute(GENERIC_BOX_ATTR);
+    });
     html.removeAttribute(ACTIVE_ATTR);
     html.removeAttribute(RESIZE_CURSOR_ATTR);
     activeTarget = null;
@@ -658,6 +690,7 @@
     // control. Only YouTube (fixed-fill) needs a synthetic resize.
     if (!fillsNatively(kind) || hasReservation()) {
       target.setAttribute(markerFor(kind), "1");
+      markGenericBox(target);
       if (kind === "youtube") {
         try { window.dispatchEvent(new Event("resize")); } catch (_) {}
       }
@@ -707,9 +740,11 @@
     if (target !== activeTarget) {
       cancelResizeInteraction();
       activeTarget?.removeAttribute(markerFor(activeKind));
+      activeTarget?.parentElement?.removeAttribute(GENERIC_BOX_ATTR);
       activeTarget = target;
       if (!fillsNatively(activeKind) || hasReservation()) {
         target.setAttribute(markerFor(activeKind), "1");
+        markGenericBox(target);
         if (activeKind === "youtube") {
           try { window.dispatchEvent(new Event("resize")); } catch (_) {}
         }

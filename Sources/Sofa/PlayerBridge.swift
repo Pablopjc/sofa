@@ -163,18 +163,38 @@ final class PlayerBridge {
             .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
+    /// Read out of the helper source rather than written here twice.
+    ///
+    /// These two strings — the installed-version marker and the command event
+    /// name — must match `content.js` exactly. When they were duplicated in
+    /// Swift, bumping the helper's VERSION left Sofa dispatching an event no
+    /// listener was bound to, and Theater silently stopped working on EVERY
+    /// site, not just the new one. Parsing it means they cannot drift again.
+    private static let theaterHelperVersion: String = {
+        let source = theaterHelperBootstrapJS
+        guard let range = source.range(
+            of: #"VERSION\s*=\s*"[^"]+""#, options: .regularExpression
+        ) else { return "unknown" }
+        let assignment = source[range]
+        guard let quoted = assignment.range(of: #""[^"]+""#, options: .regularExpression) else {
+            return "unknown"
+        }
+        return String(assignment[quoted].dropFirst().dropLast())
+    }()
+
     private static func theaterCommandJS(
         _ command: String,
         reserveCallColumn: Bool = false
     ) -> String {
         let reserve = reserveCallColumn ? "true" : "false"
+        let version = theaterHelperVersion
         return
             "(function(){var d=document.documentElement;if(!d)return 'SOFA_ERR|no-document';" +
-            "if(d.getAttribute('data-sofa-theater-helper')!=='0.1.60-disney3'){\(theaterHelperBootstrapJS)}" +
+            "if(d.getAttribute('data-sofa-theater-helper')!=='\(version)'){\(theaterHelperBootstrapJS)}" +
             "var w=\(reserve)?'auto':'0';" +
             "d.setAttribute('data-sofa-theater-command','\(command)|'+w);" +
             "d.removeAttribute('data-sofa-theater-status');" +
-            "document.dispatchEvent(new Event('sofa-theater-command-0.1.60-disney3'));" +
+            "document.dispatchEvent(new Event('sofa-theater-command-\(version)'));" +
             "return d.getAttribute('data-sofa-theater-status')||'SOFA_ERR|helper-no-response'})()"
     }
 

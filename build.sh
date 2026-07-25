@@ -3,6 +3,16 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# The Theater helper is plain JavaScript copied into the bundle, so the Swift
+# compiler never sees it. A syntax error there disables Theater on every site
+# while the build still reports success — which is exactly how 0.1.69 shipped
+# broken. Check it first when node is available.
+if command -v node >/dev/null 2>&1; then
+  node --check BrowserExtension/content.js \
+    || { echo "✗ BrowserExtension/content.js has a syntax error"; exit 1; }
+  echo "▸ content.js parses"
+fi
+
 # Sofa deploys to macOS 12 (see Sources/Sofa/Compatibility.swift). Linking the
 # x86_64 slice against a pre-13 target needs libswiftCompatibility56.a, and the
 # Command Line Tools ship that library for arm64 only — with CLT selected, the
