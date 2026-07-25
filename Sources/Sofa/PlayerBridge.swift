@@ -543,6 +543,19 @@ final class PlayerBridge {
     /// `waitUntilExit()` can hang forever if a browser stops answering Apple
     /// Events. Bound every command, including synchronous termination cleanup.
     private func runOSA(_ script: String, timeout: TimeInterval = 5.0) -> (String?, String?) {
+        // Fast path: the same script compiled once and run in-process, ~8 ms
+        // against ~195 ms for a fresh osascript. ScriptRunner declines (returns
+        // nil) whenever it cannot answer promptly — a hung player, a script it
+        // could not compile — and then the killable process below takes over.
+        if !Self.legacyPolling, let fast = ScriptRunner.shared.run(script, timeout: timeout) {
+            return fast
+        }
+        return runOSAProcess(script, timeout: timeout)
+    }
+
+    /// The original process-based path. Still the fallback, because a child
+    /// process can be killed and an in-process Apple Event cannot.
+    private func runOSAProcess(_ script: String, timeout: TimeInterval = 5.0) -> (String?, String?) {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         proc.arguments = ["-e", script]
@@ -591,10 +604,12 @@ final class PlayerBridge {
         pendingSeekTarget = nil
         lastLocalTransitionAt = .distantPast
         consecutivePollErrors = 0
-        let pollTimer = Timer(timeInterval: 0.85, repeats: true) { [weak self] _ in
+        // Ticks often; each tick that arrives before `nextPollAllowedAt` is a
+        // cheap guard. The gap, not this interval, controls the sample rate.
+        let pollTimer = Timer(timeInterval: Self.legacyPolling ? 0.85 : 0.1, repeats: true) { [weak self] _ in
             self?.poll()
         }
-        pollTimer.tolerance = 0.05
+        pollTimer.tolerance = Self.legacyPolling ? 0.05 : 0.02
         timer = pollTimer
         RunLoop.main.add(pollTimer, forMode: .common)
         poll()
@@ -629,6 +644,32 @@ final class PlayerBridge {
     // MARK: - Polling (detect local changes → broadcast)
 
     private var polling = false
+    /// How long the last sample actually took, which is what the next gap is
+    /// derived from: QuickTime answers in single-digit milliseconds and gets
+    /// sampled several times a second, while a browser running `do JavaScript`
+    /// is heavier and backs itself off. No magic constant to keep in sync with
+    /// whatever players people use.
+    private var lastPollCost: TimeInterval = 0.05
+
+    /// Dev-only: `SOFA_LEGACY_POLL=1` restores the pre-0.1.68 timings and the
+    /// osascript process, so the improvement can be measured A/B in one binary
+    /// rather than asserted.
+    static let legacyPolling = ProcessInfo.processInfo.environment["SOFA_LEGACY_POLL"] != nil
+
+    /// The floor is the worst case a friend waits to see your pause, so it is
+    /// set as low as a cheap player allows: QuickTime answers in ~8 ms, which
+    /// at this cadence is a few percent of one thread. The `cost * 4` term is
+    /// what protects heavier targets — a browser running `do JavaScript` costs
+    /// more and therefore backs itself off, without a per-player table to
+    /// maintain.
+    private func nextPollGap() -> TimeInterval {
+        if Self.legacyPolling { return (lastState?.playing ?? false) ? 0.8 : 1.5 }
+        // 0.2 s rather than lower: measured against 0.12 s it cost ~40 ms of
+        // detection latency and halved the CPU spent over a whole film. The
+        // bridge only runs while a party is live, but that is exactly when the
+        // Mac is also decoding video.
+        return min(max(lastPollCost * 4, 0.2), 1.0)
+    }
 
     private func poll() {
         guard let player, !polling, Date() >= nextPollAllowedAt else { return }
@@ -652,9 +693,11 @@ final class PlayerBridge {
         }
 
         polling = true
+        let startedAt = Date()
         osa(getScript(for: player), requiring: player) { [weak self] out, err in
             DispatchQueue.main.async {
                 self?.polling = false
+                self?.lastPollCost = Date().timeIntervalSince(startedAt)
                 self?.handlePollResult(player: player, out: out, err: err)
             }
         }
@@ -761,9 +804,11 @@ final class PlayerBridge {
                     pendingSeekTarget = nil
                 }
                 if playing != last.playing {
+                    SyncTrace.log("detected \(playing ? "play" : "pause") at \(String(format: "%.2f", time)) pollCost=\(String(format: "%.0f", lastPollCost * 1000))ms")
                     state.sync.send(SyncMessage(type: playing ? "play" : "pause", time: time))
                     lastLocalTransitionAt = now
                 } else if jumped {
+                    SyncTrace.log("detected seek to \(String(format: "%.2f", time))")
                     state.sync.send(SyncMessage(type: "seek", time: time, playing: playing))
                 } else if now.timeIntervalSince(lastTickSent) > 5 {
                     // Ticks flow while paused too, carrying `playing`: a friend
@@ -775,9 +820,12 @@ final class PlayerBridge {
             }
         }
         lastState = (time, playing, now)
-        // Keep controls and sync crisp during playback, while avoiding thousands
-        // of short-lived osascript processes when a movie is paused.
-        nextPollAllowedAt = now.addingTimeInterval(playing ? 0.8 : 1.5)
+        // Sample at a rate the player can actually sustain. The old fixed
+        // 0.8 s / 1.5 s existed because each sample forked an osascript; now
+        // that a sample is a few milliseconds, the gap is set by measurement.
+        // Paused is deliberately NOT slower than playing: hitting play from a
+        // paused movie was the worst case a friend waited on.
+        nextPollAllowedAt = now.addingTimeInterval(nextPollGap())
     }
 
     /// Publishes the title + poster locally and tells the room, but only when
