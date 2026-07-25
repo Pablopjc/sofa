@@ -113,6 +113,10 @@ final class PlayerBridge {
         "if(h==='youtube.com'||h.endsWith('.youtube.com'))x=document.querySelector('#movie_player');" +
         "else if(h==='netflix.com'||h.endsWith('.netflix.com'))x=document.querySelector('.watch-video--player-view,[data-uia=watch-video]');" +
         "else if(h==='disneyplus.com'||h.endsWith('.disneyplus.com'))x=document.querySelector('#hudson-wrapper,.video_view--theater,.hudson-container,.player-container-root,.btm-media-player');" +
+        // Any other service: a fullscreen element that contains a <video> IS the
+        // player. Asking the DOM what it holds, rather than knowing a selector
+        // per site, is what lets Theater work on a service nobody has taught it.
+        "if(!x&&f.querySelector&&f.querySelector('video'))x=f;" +
         "return !!x&&(f===document.documentElement||f===document.body||f===x||f.contains(x)||x.contains(f))}" +
         "if(!v&&!p)return 'none';var data={time:tm,playing:v?!v.paused:false,poster:poster,title:t,url:mediaURL,fullscreen:fsok()};" +
         "return 'SOFAJSON|'+encodeURIComponent(JSON.stringify(data))})()"

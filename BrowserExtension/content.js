@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.60-disney3";
-  const EVENT_NAME = "sofa-theater-command-0.1.60-disney3";
+  const VERSION = "0.1.69-generic";
+  const EVENT_NAME = "sofa-theater-command-0.1.69-generic";
   const READY_ATTR = "data-sofa-theater-helper";
   const COMMAND_ATTR = "data-sofa-theater-command";
   const STATUS_ATTR = "data-sofa-theater-status";
@@ -10,17 +10,21 @@
   const NETFLIX_ATTR = "data-sofa-theater-netflix";
   const YOUTUBE_ATTR = "data-sofa-theater-youtube";
   const DISNEY_ATTR = "data-sofa-theater-disney";
+  const GENERIC_ATTR = "data-sofa-theater-generic";
 
   // The per-site marker attribute Theater puts on the element it width-sizes.
   function markerFor(kind) {
     if (kind === "netflix") return NETFLIX_ATTR;
     if (kind === "disney") return DISNEY_ATTR;
+    if (kind === "generic") return GENERIC_ATTR;
     return YOUTUBE_ATTR;
   }
   // Disney mirrors Netflix's behaviour: a naturally-filling player that only
   // needs a width seam, with no fixed-fill scaffolding or synthetic resize.
+  // The generic path assumes the same, because a site the viewer has already
+  // put into fullscreen is by definition filling the viewport itself.
   function fillsNatively(kind) {
-    return kind === "netflix" || kind === "disney";
+    return kind === "netflix" || kind === "disney" || kind === "generic";
   }
   const RESIZE_CURSOR_ATTR = "data-sofa-theater-resize-cursor";
   const STYLE_ID = "sofa-theater-style";
@@ -99,10 +103,35 @@
     if (host === "netflix.com" || host.endsWith(".netflix.com")) return "netflix";
     if (host === "youtube.com" || host.endsWith(".youtube.com")) return "youtube";
     if (host === "disneyplus.com" || host.endsWith(".disneyplus.com")) return "disney";
-    return null;
+    // Everything else gets the generic seam. A named entry above is only needed
+    // where the generic element hunt picks the wrong node (YouTube) or the site
+    // wants extra guards (Disney) — not for every new service. installLayout
+    // measures the result and reverts cleanly if the guess was wrong, so
+    // attempting an unknown site cannot leave the page broken.
+    return "generic";
+  }
+
+  /// The element to narrow, worked out from structure rather than from a
+  /// per-site selector: the fullscreen element itself can never be shrunk (the
+  /// UA's `:fullscreen { width:100% !important }` outranks author CSS), so take
+  /// the outermost normal-flow descendant that still contains the video. This
+  /// is the same walk Disney needed, promoted to the default.
+  function findGenericTarget() {
+    const fs = document.fullscreenElement || document.webkitFullscreenElement;
+    if (!fs) return null; // Theater's fullscreen gate rejects this anyway
+    const video = fs.querySelector && fs.querySelector("video");
+    if (!video || video === fs) return null;
+    let node = video.parentElement;
+    let child = null;
+    while (node && node !== fs) {
+      child = node;
+      node = node.parentElement;
+    }
+    return child;
   }
 
   function findTarget(kind) {
+    if (kind === "generic") return findGenericTarget();
     if (kind === "netflix") {
       return document.querySelector(".watch-video--player-view") ||
         document.querySelector('[data-uia="watch-video"]');
@@ -122,13 +151,7 @@
       if (wrap && fs !== wrap && fs.contains(wrap)) return wrap;
       // The wrapper IS (or contains) the promoted element: size the outermost
       // video-bearing descendant of the top-layer element instead.
-      const video = fs.querySelector && fs.querySelector("video");
-      if (video && video !== fs) {
-        let node = video.parentElement, child = null;
-        while (node && node !== fs) { child = node; node = node.parentElement; }
-        if (child) return child;
-      }
-      return wrap;
+      return findGenericTarget() || wrap;
     }
     return null;
   }
@@ -191,12 +214,14 @@
       }
       html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] #movie_player[${YOUTUBE_ATTR}],
       html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${NETFLIX_ATTR}],
-      html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${DISNEY_ATTR}] {
+      html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${DISNEY_ATTR}],
+      html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${GENERIC_ATTR}] {
         overflow: visible !important;
       }
       html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] #movie_player[${YOUTUBE_ATTR}]::after,
       html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${NETFLIX_ATTR}]::after,
-      html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${DISNEY_ATTR}]::after {
+      html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${DISNEY_ATTR}]::after,
+      html[${ACTIVE_ATTR}][${RESIZE_CURSOR_ATTR}] [${GENERIC_ATTR}]::after {
         content: "" !important;
         position: absolute !important;
         right: -10px !important;
@@ -228,6 +253,28 @@
         [${NETFLIX_ATTR}] {
           left: 0 !important;
           width: ${width} !important;
+        }
+      `;
+    }
+
+    if (kind === "generic") {
+      // The seam Netflix and Disney both reduce to, with nothing site-specific
+      // in it: narrow the container and let the <video> letterbox into what is
+      // left. With no call column to reserve there is nothing to change, so an
+      // unknown site is not touched at all until the viewer needs the space.
+      if (!hasReservation()) return "";
+      return `${interactionCSS}
+        html[${ACTIVE_ATTR}], html[${ACTIVE_ATTR}] body {
+          background: #000 !important;
+        }
+        [${GENERIC_ATTR}] {
+          left: 0 !important;
+          width: ${width} !important;
+        }
+        [${GENERIC_ATTR}] video {
+          width: 100% !important;
+          height: 100% !important;
+          object-fit: contain !important;
         }
       `;
     }
@@ -541,6 +588,9 @@
     document.querySelectorAll(`[${DISNEY_ATTR}]`).forEach((element) => {
       element.removeAttribute(DISNEY_ATTR);
     });
+    document.querySelectorAll(`[${GENERIC_ATTR}]`).forEach((element) => {
+      element.removeAttribute(GENERIC_ATTR);
+    });
     html.removeAttribute(ACTIVE_ATTR);
     html.removeAttribute(RESIZE_CURSOR_ATTR);
     activeTarget = null;
@@ -561,14 +611,13 @@
     clearLayout(false, false);
 
     const kind = siteKind();
-    if (!kind) {
-      setStatus("SOFA_ERR|unsupported-site");
-      return;
-    }
-
     const target = findTarget(kind);
     if (!target) {
-      setStatus(`SOFA_ERR|no-${kind}-player`);
+      // For a known site this means the site changed its markup. For the
+      // generic path it means the fullscreen element holds no <video> — a
+      // photo viewer, a game, a slide deck. Either way Theater declines
+      // rather than reshaping something that is not a player.
+      setStatus(kind === "generic" ? "SOFA_ERR|no-video-in-fullscreen" : `SOFA_ERR|no-${kind}-player`);
       return;
     }
     // Theater augments the fullscreen the viewer explicitly opened with F. It
