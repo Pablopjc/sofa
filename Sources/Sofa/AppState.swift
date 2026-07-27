@@ -316,6 +316,8 @@ final class AppState: ObservableObject {
     }
 
     func removeFriend(id: String) {
+        // Whatever they were doing, they are not in an ad break here any more.
+        clearFriendAdBreak(peer: id, announce: false)
         if let i = friends.firstIndex(where: { $0.id == id }) {
             let name = friends[i].name
             friends.remove(at: i)
@@ -676,6 +678,12 @@ final class AppState: ObservableObject {
     }
 
     func leaveRoom() {
+        friendAdBreaks.removeAll()
+        adOptOut.removeAll()
+        adBreakWatchdog?.invalidate()
+        adBreakWatchdog = nil
+        localAdBreak = false
+        refreshAdOverlay()
         saveSessionSnapshot()
         endRoomActivity()
         roomOperationID = nil
@@ -922,6 +930,127 @@ final class AppState: ObservableObject {
         guard inRoom, Self.isAllowedReaction(emoji) else { return }
         sync.send(SyncMessage(type: "react", name: emoji))
         ReactionOverlay.shared.show(emoji)
+    }
+
+    // MARK: - Ad breaks
+
+    /// A friend's ad break, as this Mac currently understands it.
+    struct FriendAdBreak: Equatable {
+        let peer: String
+        var name: String?
+        let startedAt: Date
+        var lastFrameAt: Date
+        var filmTime: Double?
+        /// No ad frame for a while: either the break ended without us hearing,
+        /// or they dropped. We say so rather than pretending to still know.
+        var lost: Bool
+    }
+
+    @Published private(set) var friendAdBreaks: [String: FriendAdBreak] = [:]
+    /// True while WE are the one watching ads.
+    @Published private(set) var localAdBreak = false
+    /// Peers whose ad frames we ignore because the user chose to keep watching.
+    private var adOptOut: Set<String> = []
+    private var adBreakWatchdog: Timer?
+
+    /// The break to show, if any: a friend's takes precedence over our own,
+    /// because it is the one that explains why the picture stopped.
+    var visibleAdBreak: FriendAdBreak? {
+        friendAdBreaks.values.sorted { $0.startedAt < $1.startedAt }.first
+    }
+
+    func setLocalAdBreak(_ active: Bool) {
+        guard localAdBreak != active else { return }
+        localAdBreak = active
+    }
+
+    func noteFriendAdBreak(peer: String, name: String?, filmTime: Double?) {
+        guard inRoom, !adOptOut.contains(peer) else { return }
+        let now = Date()
+        if var existing = friendAdBreaks[peer] {
+            existing.lastFrameAt = now
+            existing.lost = false
+            if let name { existing.name = name }
+            if let filmTime { existing.filmTime = filmTime }
+            friendAdBreaks[peer] = existing
+        } else {
+            friendAdBreaks[peer] = FriendAdBreak(
+                peer: peer, name: name, startedAt: now,
+                lastFrameAt: now, filmTime: filmTime, lost: false
+            )
+            showToast(Self.adStartToast(name: name))
+            startAdWatchdog()
+        }
+        refreshAdOverlay()
+    }
+
+    func clearFriendAdBreak(peer: String, announce: Bool = true) {
+        guard let gone = friendAdBreaks.removeValue(forKey: peer) else { return }
+        adOptOut.remove(peer)
+        if announce, !gone.lost { showToast(Self.adEndToast(name: gone.name)) }
+        if friendAdBreaks.isEmpty { adBreakWatchdog?.invalidate(); adBreakWatchdog = nil }
+        refreshAdOverlay()
+    }
+
+    /// The user pressed play during a friend's break. Their choice wins: stop
+    /// showing the break and stop letting that peer's ad frames pause them
+    /// again every heartbeat.
+    func optOutOfFriendAdBreaks() {
+        for peer in friendAdBreaks.keys { adOptOut.insert(peer) }
+        friendAdBreaks.removeAll()
+        adBreakWatchdog?.invalidate()
+        adBreakWatchdog = nil
+        refreshAdOverlay()
+    }
+
+    private func startAdWatchdog() {
+        guard adBreakWatchdog == nil else { return }
+        adBreakWatchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async { self?.sweepAdBreaks() }
+        }
+    }
+
+    /// The banner belongs wherever the viewer is actually looking: inside the
+    /// panel when it is open, in the floating window otherwise — which is the
+    /// normal case, and the only possible one in Theater.
+    func refreshAdOverlay() {
+        let showFloating = AdBreakOverlay.panelIsHidden ? visibleAdBreak : nil
+        AdBreakOverlay.shared.update(showFloating)
+    }
+
+    /// Heartbeats arrive every 5 s. After 20 s of silence we stop claiming to
+    /// know what is happening — but we never auto-resume: the friend may still
+    /// be sitting in a long unskippable break, and starting without them is the
+    /// one thing a watch party must not do on its own.
+    private func sweepAdBreaks() {
+        let now = Date()
+        var changed = false
+        for (peer, value) in friendAdBreaks where !value.lost {
+            if now.timeIntervalSince(value.lastFrameAt) > 20 {
+                var updated = value
+                updated.lost = true
+                friendAdBreaks[peer] = updated
+                changed = true
+            }
+        }
+        if changed { showToast("Lost track of the ad break — press play when you're ready.") }
+        if friendAdBreaks.isEmpty { adBreakWatchdog?.invalidate(); adBreakWatchdog = nil }
+        // Also re-homes the banner when the panel is opened or dismissed while
+        // a break is running.
+        refreshAdOverlay()
+    }
+
+    static func adStartToast(name: String?) -> String {
+        "Paused — ads on \(possessive(name)) side"
+    }
+    static func adEndToast(name: String?) -> String {
+        name.map { "Ads over — \($0) is back" } ?? "Ads over — your friend is back"
+    }
+    /// "Bea's" / "your friend's" — the app already falls back to "your friend"
+    /// when a name never arrived.
+    static func possessive(_ name: String?) -> String {
+        guard let name, !name.isEmpty else { return "your friend's" }
+        return name.hasSuffix("s") ? "\(name)'" : "\(name)'s"
     }
 
     func showRemoteReaction(_ emoji: String) {

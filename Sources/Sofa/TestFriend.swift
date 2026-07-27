@@ -93,6 +93,41 @@ final class TestFriend: ObservableObject {
         send(SyncMessage(type: "loaded", name: "Your friend’s copy"))
     }
 
+    /// Simulates the friend hitting an ad break: the labelled pause, then the
+    /// 5 s heartbeats that prove they are still there. Both carry the FILM
+    /// position captured up front — never `estimatedTime`, which would drift
+    /// wall-clock seconds onto a paused room and manufacture the very desync
+    /// this is meant to test.
+    private var preAdTime: Double?
+    private var adTimer: Timer?
+
+    func pressAdStart() {
+        let frozen = estimatedTime
+        preAdTime = frozen
+        isPlaying = false
+        send(SyncMessage(type: "pause", time: frozen, ad: true))
+        adTimer?.invalidate()
+        adTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let t = self.preAdTime else { return }
+                self.send(SyncMessage(type: "tick", time: t, playing: false, ad: true))
+            }
+        }
+    }
+
+    func pressAdEnd() {
+        adTimer?.invalidate()
+        adTimer = nil
+        let resumeAt = preAdTime ?? estimatedTime
+        preAdTime = nil
+        isPlaying = true
+        lastKnownTime = resumeAt
+        lastHeardAt = Date()
+        // No `ad` field: this is an ordinary resume, and that is exactly how a
+        // peer that never heard the start must read it.
+        send(SyncMessage(type: "seek", time: resumeAt, playing: true))
+    }
+
     // MARK: - Plumbing
 
     private func send(_ message: SyncMessage) {
@@ -141,7 +176,11 @@ final class TestFriend: ObservableObject {
         case "tick":
             lastKnownTime = msg.time ?? lastKnownTime
             lastHeardAt = Date()
-            isPlaying = true
+            // Ticks carry `playing` and flow while paused too. Forcing true
+            // here made the harness extrapolate wall-clock seconds onto a
+            // paused room, which is exactly the desync an ad-break test has to
+            // be able to tell apart from a real one.
+            isPlaying = msg.playing ?? isPlaying
         default:
             break
         }

@@ -1057,6 +1057,12 @@ struct PlayerCard: View {
         Card {
             SectionLabel(text: "Play from")
 
+            // Why the picture stopped, above everything else in the card — it
+            // is the only question the viewer has at that moment.
+            if let ad = state.visibleAdBreak {
+                AdBreakBanner(ad: ad, overlay: false)
+            }
+
             // Watch-together CTA: what the friend is watching, made prominent.
             if let friendTitle = state.friendNowPlaying, !state.friendMatchesLocalMedia {
                 watchTogether(friendTitle: friendTitle)
@@ -1648,6 +1654,10 @@ struct TestFriendCard: View {
             HStack(spacing: 6) {
                 Button("↩ Back 15s") { friend.skip(by: -15) }.sofaGlassButton()
                 Button("↪ Skip 30s") { friend.skip(by: 30) }.sofaGlassButton()
+            }
+            HStack(spacing: 6) {
+                Button("📺 Ad break") { friend.pressAdStart() }.sofaGlassButton()
+                Button("✅ Ads over") { friend.pressAdEnd() }.sofaGlassButton()
             }
             .disabled(!friend.connected)
 

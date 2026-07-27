@@ -160,6 +160,10 @@ export class Room extends DurableObject<Env> {
         peerID: attachment.peerID,
         peers,
         expiresAt: metadata.expiresAt,
+        // Capability advertisement. Clients only put "ad" on the wire once they
+        // have seen this, because an older Worker answers an unknown field with
+        // close(1008) — which would drop the sender's socket on every ad break.
+        ad: true,
       });
       const hello = sanitizeForRelay(parsed.message, metadata.secret, attachment.peerID);
       for (const peer of this.authenticatedSockets(socket)) this.safeSend(peer, hello);

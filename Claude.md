@@ -236,6 +236,30 @@ hay una sola `pageFullscreenTargetJS` (`function sofaFSTarget()`) que usan tanto
 `browserGetJS` como `compatiblePageFullscreenJS`. Si añades una tercera pregunta
 sobre fullscreen, reutilízala; no la copies.
 
+**Cortes publicitarios (0.1.74).** Cuando a alguien le salen anuncios, su reloj
+deja de ser el de la película. Antes esto se resolvía devolviendo `'none'` en
+YouTube — y `'none'` significa "aquí no hay nada", lo que reportaba
+`fullscreen:false` y **cerraba Theater en cada anuncio**. Ahora el sondeo
+informa del anuncio (`ad`, un bitfield) y es Swift quien decide qué retener.
+Tres reglas que no son negociables, cada una pagada con un fallo concreto del
+análisis adversarial:
+1. **Dos banderas, no una.** `rawAdSince` protege desde la PRIMERA muestra (no
+   emitir, no aplicar comandos entrantes); `adBroadcast` anuncia con retardo y
+   un suelo de 8 s. Si la protección esperase al retardo, el tick de un amigo
+   pausaría el anuncio — y **un pre-roll pausado no termina nunca**, así que la
+   sala quedaba muerta.
+2. **El fin del corte se emite siempre.** La versión que solo reanudaba "si
+   ningún otro está en anuncios" dejaba la sala pausada para siempre cuando dos
+   mid-rolls se solapaban, que es el caso normal. Quien siga en su corte
+   descarta la trama él mismo.
+3. **Nunca se reanuda solo por timeout.** A los 20 s sin señal el aviso pasa a
+   "terminó o se cayó" y el vídeo sigue pausado: el amigo puede estar en un
+   corte largo no saltable.
+El campo `ad` va **solo si el otro extremo dice que lo entiende** (`welcome`):
+el relay valida con lista blanca de campos y responde `close(1008)` a lo
+desconocido, así que mandarlo a un Worker sin actualizar tiraría el socket en
+cada anuncio — y una desconexión pausa la película del propio anunciado.
+
 **Una página puede tener varios reproductores reales a la vez (Prime Video).**
 En `primevideo.com` la ficha del título mantiene vivo un preview silenciado
 *detrás* del reproductor a pantalla completa — tres `<video>`, los tres con el

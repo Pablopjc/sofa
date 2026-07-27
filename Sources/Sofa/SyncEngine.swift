@@ -14,6 +14,13 @@ struct SyncMessage {
     var count: Int?
     var from: String?
     var sentAt: Double?   // ms since epoch
+    /// Set only on a pause/tick/seek the sender is emitting because THEY are in
+    /// an ad break. It is a reason label on a pause the room already
+    /// understands, never a new kind of event: a client that has never heard of
+    /// it reads an ordinary pause and pauses, which is still the right thing to
+    /// do — it just cannot say why. Only ever `true` on the wire; see
+    /// `normalized()`.
+    var ad: Bool?
 
     var latencySeconds: Double {
         guard let sentAt else { return 0 }
@@ -49,6 +56,11 @@ struct SyncMessage {
         if let sentAt, !sentAt.isFinite || sentAt < 0 {
             message.sentAt = nil
         }
+        // `false` never travels. The frame that ENDS a break has to be
+        // byte-identical to an ordinary seek, so that a peer which somehow
+        // missed the start cannot be told "an ad you never heard about is
+        // over" and act on it.
+        if message.ad != true { message.ad = nil }
         return message
     }
 
@@ -84,6 +96,7 @@ struct SyncMessage {
         if let count = message.count { dict["count"] = count }
         if let from = message.from { dict["from"] = from }
         if let sentAt = message.sentAt { dict["sentAt"] = sentAt }
+        if let ad = message.ad { dict["ad"] = ad }
         return try? JSONSerialization.data(withJSONObject: dict)
     }
 
@@ -100,7 +113,8 @@ struct SyncMessage {
             token: obj["token"] as? String,
             count: (obj["count"] as? NSNumber)?.intValue,
             from: obj["from"] as? String,
-            sentAt: (obj["sentAt"] as? NSNumber)?.doubleValue
+            sentAt: (obj["sentAt"] as? NSNumber)?.doubleValue,
+            ad: obj["ad"] as? Bool
         ).normalized()
     }
 }
@@ -208,6 +222,10 @@ final class SyncEngine {
     }
 
     private var awaitingWelcome: PendingWelcome?
+    /// Whether the other end of this socket has said it understands the `ad`
+    /// label (see the "welcome" case). Defaults to false so an unpatched relay
+    /// is never handed a field it will close the connection over.
+    private var relaySupportsAd = false
     private var presenceTimer: Timer?
     private var connectionGeneration: UInt64 = 0
     private var onlineReconnectTarget: OnlineReconnectTarget?
@@ -300,6 +318,11 @@ final class SyncEngine {
             return
         }
         roomToken = Self.generateToken()
+        // Hosting a LAN/Test room makes THIS build the relay, and its forwarding
+        // path copies frames through verbatim — so the `ad` label is safe here
+        // regardless of what the public Worker understands. This is also what
+        // makes the whole feature testable in the Test Zone today.
+        relaySupportsAd = true
         let params = NWParameters.tcp
         if let tcp = params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
             tcp.enableKeepalive = true
@@ -511,7 +534,10 @@ final class SyncEngine {
             var sanitizedHello = msg
             sanitizedHello.token = nil
             outgoing = sanitizedHello.encoded() ?? data
-            if let welcome = SyncMessage(type: "welcome").encoded() {
+            // Advertise the ad label the same way the Worker does, so a peer
+            // joining our LAN room learns it can use it. An older host omits it
+            // and its guests correctly fall back to unlabelled pauses.
+            if let welcome = SyncMessage(type: "welcome", ad: true).encoded() {
                 send(data: welcome, over: conn)
             }
             broadcastPeerCount()
@@ -914,6 +940,9 @@ final class SyncEngine {
         var msg = message
         msg.from = String(myId)
         msg.sentAt = Date().timeIntervalSince1970 * 1000
+        // Strip the label rather than the frame: an ad pause that reaches an
+        // old relay as a plain pause still pauses the room correctly.
+        if msg.ad == true, !relaySupportsAd { msg.ad = nil }
         guard let data = msg.encoded(), let client else { return }
         send(data: data, over: client)
     }
@@ -963,6 +992,15 @@ final class SyncEngine {
         do {
             switch msg.type {
             case "welcome":
+                // Capability probe, not trial-and-error. The relay validates
+                // frames against a strict field allowlist and answers anything
+                // unknown with close(1008) — so putting `ad` on the wire before
+                // the Worker knows the field would drop the sender's socket on
+                // every ad break, and a dropped socket auto-pauses their own
+                // film. We send it only where the other end has said it can
+                // take it; everywhere else the break still pauses the room, it
+                // just arrives unlabelled.
+                relaySupportsAd = (msg.ad == true)
                 if let pending = awaitingWelcome, pending.connection === conn {
                     let restored = pending.purpose.isReconnect
                     reconnectAllowed = onlineReconnectTarget != nil
@@ -1036,6 +1074,22 @@ final class SyncEngine {
                     // while nothing propagates was the reported failure.
                     state.noteMismatchedContentCommandDropped()
                     break
+                }
+                // Placed AFTER the staleness and content gates on purpose: the
+                // banner must never claim "paused because of ads" for a frame
+                // the app then went on to drop.
+                if let peer = msg.from {
+                    if msg.ad == true {
+                        state.noteFriendAdBreak(
+                            peer: peer,
+                            name: state.friends.first { $0.id == peer }?.name,
+                            filmTime: msg.time
+                        )
+                    } else if state.friendAdBreaks[peer] != nil {
+                        // The first unlabelled frame from a peer whose break we
+                        // were showing IS the resume.
+                        state.clearFriendAdBreak(peer: peer)
+                    }
                 }
                 PlayerBridge.shared.applyRemote(msg)
             default:

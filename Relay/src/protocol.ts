@@ -25,9 +25,12 @@ const fieldsByType: Record<ClientMessageType, ReadonlySet<string>> = {
   hello: new Set(["token", "name"]),
   loaded: new Set(["name", "art", "url", "time", "playing"]),
   play: new Set(["time", "playing", "name", "art", "url"]),
-  pause: new Set(["time", "playing", "name", "art", "url"]),
-  seek: new Set(["time", "playing", "name", "art", "url"]),
-  tick: new Set(["time", "playing", "name", "art", "url"]),
+  // "ad" labels a pause/tick/seek the sender is emitting because THEY are in an
+  // ad break, so the other side can say why the picture stopped instead of just
+  // stopping it. Not allowed on "play": a break never starts one.
+  pause: new Set(["time", "playing", "name", "art", "url", "ad"]),
+  seek: new Set(["time", "playing", "name", "art", "url", "ad"]),
+  tick: new Set(["time", "playing", "name", "art", "url", "ad"]),
   // Reactions carry the emoji in "name" (same ≤256-char validation as titles).
   react: new Set(["name"]),
   bye: new Set(),
@@ -141,6 +144,9 @@ export function parseClientFrame(frame: string | ArrayBuffer): ParseResult {
   }
   if (message.playing !== undefined && typeof message.playing !== "boolean") {
     return { ok: false, reason: "invalid_playing" };
+  }
+  if (message.ad !== undefined && typeof message.ad !== "boolean") {
+    return { ok: false, reason: "invalid_ad" };
   }
 
   return {

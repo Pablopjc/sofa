@@ -20,6 +20,21 @@ describe("relay protocol", () => {
     });
   });
 
+  it("accepts the ad-break label on a pause, tick or seek, but not on play", () => {
+    expect(parseClientFrame('{"type":"pause","time":41,"ad":true}').ok).toBe(true);
+    expect(parseClientFrame('{"type":"tick","time":41,"playing":false,"ad":true}').ok).toBe(true);
+    expect(parseClientFrame('{"type":"seek","time":41,"playing":true,"ad":true}').ok).toBe(true);
+    // An ad break never starts playback, so the label has no business there.
+    expect(parseClientFrame('{"type":"play","time":41,"ad":true}')).toEqual({
+      ok: false,
+      reason: "field_not_allowed",
+    });
+    expect(parseClientFrame('{"type":"pause","time":41,"ad":"yes"}')).toEqual({
+      ok: false,
+      reason: "invalid_ad",
+    });
+  });
+
   it("accepts reactions with an emoji name and nothing else", () => {
     expect(parseClientFrame('{"type":"react","name":"🍿"}').ok).toBe(true);
     expect(parseClientFrame('{"type":"react"}')).toEqual({

@@ -31,6 +31,27 @@ final class PlayerBridge {
     private var nextPollAllowedAt = Date.distantPast
     private let queue = DispatchQueue(label: "sofa.playerbridge")
 
+    // MARK: Ad breaks (sender side)
+
+    /// The most recent sample that was definitely the FILM, not an ad. Kept
+    /// separate from `lastState` on purpose: remote commands nil that one, and
+    /// an ad that starts moments after an applied seek would otherwise leave us
+    /// with no honest position to pause the room at.
+    private var lastFilmSample: (time: Double, playing: Bool, at: Date)?
+    /// Undebounced. Protection (holding the ad's clock back) arms on the very
+    /// FIRST positive sample: a second of un-broadcast local state costs
+    /// nothing and the next tick heals it, whereas a second of the ad's clock
+    /// on the wire drags everyone to the wrong place.
+    private var rawAdSince: Date?
+    /// Debounced and floored. Only this one ever reaches the wire or the UI.
+    private var adBroadcast = false
+    private var adContentKey: String?
+    private var lastAdHeartbeat = Date.distantPast
+    /// Long enough that a skippable pre-roll somebody skips at 0:05 never
+    /// interrupts their friend at all.
+    private static let adAnnounceFloor: TimeInterval = 8
+    private static let adHeartbeatGap: TimeInterval = 5
+
     /// Cinema must be removed from the tab that entered it, not whichever tab
     /// happens to be active when the user leaves Theater.
     private enum CinemaTarget {
@@ -92,6 +113,46 @@ final class PlayerBridge {
         "if(fsel){var inside=pool.filter(function(v){return fsel.contains(v)});if(inside.length)pool=inside}" +
         "pool.sort(function(a,b){return vscore(b)-vscore(a)});return pool[0]}"
 
+    /// "Is an ad playing right now?", asked of the page.
+    ///
+    /// Deliberately NOT part of `jsHelpers`: that string is also interpolated
+    /// into `browserCmdJS` and `browserSeekJS`, and `ScriptRunner` caches a
+    /// compiled NSAppleScript per distinct source with no eviction — while
+    /// `browserSeekJS` mints a new source for every seek target. Growing
+    /// `jsHelpers` would therefore inflate every cached seek script forever, on
+    /// services where this code can never even run. The poll is the only caller.
+    ///
+    /// Returns a bitfield so the trace log can tell the signals apart:
+    /// 1 = YouTube ad-showing, 2 = YouTube ad-interrupting,
+    /// 4 = Prime ad countdown has text, 8 = Prime ad-resume notice is visible.
+    private static let adDetectJS =
+        // Visible for real: an ad overlay inside a container the site has faded
+        // out is not on screen. Opacity does NOT cascade into a descendant's
+        // computed value and does not affect layout, so the ancestors must be
+        // walked — Prime hides its whole chrome layer with opacity, which would
+        // otherwise read as a permanent ad.
+        "function sofaAdVis(e){if(!e)return false;" +
+        "if(getComputedStyle(e).visibility==='hidden')return false;" +
+        "var n=e,i=0;while(n&&n.nodeType===1&&i<12){var s=getComputedStyle(n);" +
+        "if(s.display==='none'||Number(s.opacity)===0)return false;" +
+        "var r=n.getBoundingClientRect();if(r.width<=0||r.height<=0)return false;" +
+        "n=n.parentElement;i++}return true}" +
+        // Prime Video keeps a second, muted hero player alive behind the one in
+        // fullscreen, so the question must be asked of the player that owns the
+        // video actually being watched — never of the document.
+        "function sofaAdRoot(v){return v&&v.closest?v.closest('[id^=dv-web-player]'):null}" +
+        "function sofaAdBits(v){var h=location.hostname.toLowerCase(),b=0;" +
+        "if(h.indexOf('youtube')>-1){var p=document.querySelector('#movie_player');" +
+        "if(p&&p.classList){if(p.classList.contains('ad-showing'))b=b|1;" +
+        "if(p.classList.contains('ad-interrupting'))b=b|2}return b}" +
+        "if(h.indexOf('primevideo.')>-1||h.indexOf('amazon.')>-1){var rt=sofaAdRoot(v);if(!rt)return 0;" +
+        // The countdown is an empty <div> outside a break and gets filled with
+        // the remaining time during one — measured on the real player.
+        "var t=rt.querySelector('.atvwebplayersdk-ad-timer-countdown');" +
+        "if(t&&(t.textContent||'').trim().length>0)b=b|4;" +
+        "var m=rt.querySelector('.atvwebplayersdk-ad-resume-message');" +
+        "if(sofaAdVis(m))b=b|8;return b}return 0}"
+
     /// One definition of "the page is in a fullscreen that holds the site
     /// player", returning that player element or null. The playback poll and
     /// the Theater gate both ask this question and must never answer it
@@ -140,13 +201,16 @@ final class PlayerBridge {
         "if(onNF){var nm=location.pathname.match(/\\/watch\\/(\\d+)/);if(nm)mediaURL=location.origin+'/watch/'+nm[1];" +
         "var sels=['[data-uia=video-title]','[data-uia=episode-title]','.video-title'];" +
         "for(var j=0;j<sels.length;j++){var el=document.querySelector(sels[j]);if(el&&el.innerText.trim()){t=el.innerText.trim().replace(/\\s*\\n\\s*/g,' — ');break}}}" +
-        // During a YouTube ad the main <video> is the ad itself: its clock and
-        // play state must never be broadcast as movie positions.
-        "if(location.hostname.indexOf('youtube')>-1){var ap=document.querySelector('#movie_player');" +
-        "if(ap&&(ap.className.indexOf('ad-showing')>-1||ap.className.indexOf('ad-interrupting')>-1))return 'none'}" +
         "var p=onNF?nfp():null;var tm=p?p.getCurrentTime()/1000:(v?v.currentTime:0);" +
-        "\(pageFullscreenTargetJS)" +
-        "if(!v&&!p)return 'none';var data={time:tm,playing:v?!v.paused:false,poster:poster,title:t,url:mediaURL,fullscreen:!!sofaFSTarget()};" +
+        "\(pageFullscreenTargetJS)\(adDetectJS)" +
+        // During an ad the <video> IS the ad: its clock and play state must
+        // never be broadcast as film positions. This used to be handled by
+        // returning 'none' for a YouTube ad — but 'none' means "nothing is
+        // playing here", which also reported fullscreen:false and so CLOSED
+        // Theater on every ad break. The ad is now reported as what it is and
+        // the Swift side decides what to hold back.
+        "var ab=sofaAdBits(v);" +
+        "if(!v&&!p)return 'none';var data={time:tm,playing:v?!v.paused:false,poster:poster,title:t,url:mediaURL,fullscreen:!!sofaFSTarget(),ad:ab};" +
         "return 'SOFAJSON|'+encodeURIComponent(JSON.stringify(data))})()"
     }
 
@@ -810,11 +874,22 @@ final class PlayerBridge {
             state.showToast("Connected — you're in sync")
         default: break
         }
+        // Fullscreen is reported FIRST and unconditionally, before any ad
+        // handling. An ad used to make this whole payload come back as 'none',
+        // which reported fullscreen:false and therefore closed Theater on every
+        // ad break — the break is exactly when you least want the layout torn
+        // down.
+        state.playerBridgeReportedFullscreen(media.fullscreen, for: player)
+
+        // Everything below this line reads the player's clock, and during an ad
+        // that clock belongs to the ad, not the film. Bail before publishing it
+        // anywhere: to the local UI, to nowPlaying, or to the room.
+        if handleAdSample(media, at: now, state: state) { return }
+
         if playingChanged || now.timeIntervalSince(lastLivePublishedAt) >= 1.5 {
             state.extLive = .playing(time: time, isPlaying: playing)
             lastLivePublishedAt = now
         }
-        state.playerBridgeReportedFullscreen(media.fullscreen, for: player)
         updateNowPlaying(
             title: media.title,
             poster: media.poster,
@@ -823,6 +898,7 @@ final class PlayerBridge {
             playing: playing,
             state: state
         )
+        lastFilmSample = (time, playing, now)
 
         if let last = lastState {
             if now < suppressUntil {
@@ -904,6 +980,104 @@ final class PlayerBridge {
         }
     }
 
+    /// Runs one poll sample through the ad state machine.
+    ///
+    /// Returns true when the caller must stop processing the sample — i.e. we
+    /// are inside a break and everything downstream would be reading the ad's
+    /// clock as if it were the film's.
+    @MainActor
+    private func handleAdSample(_ media: MediaResult, at now: Date, state: AppState) -> Bool {
+        let raw = media.adActionable
+        if media.adBits != 0 {
+            // Prime's signal is measured and logged but never acted on yet; this
+            // line is what will turn "we think this is what a Prime break looks
+            // like" into evidence the first time a real one happens.
+            SyncTrace.log("ad bits=\(media.adBits) actionable=\(raw) t=\(String(format: "%.1f", media.time))")
+        }
+
+        guard raw else {
+            guard rawAdSince != nil else { return false }
+            rawAdSince = nil
+            adContentKey = nil
+            // The film jumped from wherever the ad left the clock; the differ
+            // must not read that as the user seeking.
+            lastState = nil
+            if adBroadcast {
+                adBroadcast = false
+                // Unconditional and idempotent. An earlier design only resumed
+                // when no other peer was still ad-flagged, which deadlocked two
+                // people whose mid-rolls overlapped — the ordinary case. A peer
+                // still in their own break drops this frame themselves.
+                state.sync.send(
+                    SyncMessage(type: "seek", time: media.time, playing: media.playing)
+                )
+                SyncTrace.log("ad end -> resume at \(String(format: "%.1f", media.time))")
+            }
+            state.setLocalAdBreak(false)
+            return false
+        }
+
+        // A break that starts, and a tab that changes under us mid-break, are
+        // different things: the poll reads whatever tab is in front, so freezing
+        // metadata across a tab switch would pause a friend on a film we are no
+        // longer watching.
+        if let since = rawAdSince, media.url != adContentKey {
+            _ = since
+            rawAdSince = nil
+            adBroadcast = false
+            adContentKey = nil
+            state.setLocalAdBreak(false)
+            return false
+        }
+
+        if rawAdSince == nil {
+            rawAdSince = now
+            adContentKey = media.url
+            // A friend's routine paused-tick arriving now would otherwise see
+            // "they are playing" (the ad is), decide their pause was lost, and
+            // pause + seek us into the ad. Claiming a fresh local transition
+            // buys the grace window that repair path respects.
+            lastLocalTransitionAt = now
+            SyncTrace.log("ad start (bits=\(media.adBits))")
+        }
+
+        let elapsed = now.timeIntervalSince(rawAdSince ?? now)
+        if !adBroadcast, elapsed >= Self.adAnnounceFloor, let film = lastFilmSample {
+            adBroadcast = true
+            lastAdHeartbeat = now
+            state.sync.send(SyncMessage(type: "pause", time: film.time, ad: true))
+            SyncTrace.log("ad announced at film \(String(format: "%.1f", film.time))")
+            state.setLocalAdBreak(true)
+        } else if adBroadcast, now.timeIntervalSince(lastAdHeartbeat) >= Self.adHeartbeatGap,
+                  let film = lastFilmSample {
+            // Heartbeat carries the FILM position, never the ad's. It doubles as
+            // the existing lost-pause repair, and as the receiver's proof we are
+            // still here.
+            lastAdHeartbeat = now
+            state.sync.send(SyncMessage(type: "tick", time: film.time, playing: false, ad: true))
+        }
+
+        // The early return skips the normal cadence line at the end of the poll;
+        // without this the poll would free-run for the whole break.
+        nextPollAllowedAt = now.addingTimeInterval(nextPollGap())
+        return true
+    }
+
+    /// Called when the browser goes away mid-break: an honest "they stopped",
+    /// never a silent hang on the friend's side.
+    @MainActor
+    private func abortAdBreak(state: AppState) {
+        guard rawAdSince != nil else { return }
+        let film = lastFilmSample
+        rawAdSince = nil
+        adContentKey = nil
+        if adBroadcast {
+            adBroadcast = false
+            state.sync.send(SyncMessage(type: "pause", time: film?.time ?? 0))
+        }
+        state.setLocalAdBreak(false)
+    }
+
     private struct MediaResult {
         let time: Double
         let playing: Bool
@@ -911,6 +1085,13 @@ final class PlayerBridge {
         let title: String
         let url: String?
         let fullscreen: Bool?
+        /// Bitfield from `adDetectJS`; 0 on players that cannot report ads.
+        var adBits: Int = 0
+        /// Only YouTube's signal is acted on. Prime's is measured and traced
+        /// but never allowed to pause anyone until a real Prime break has been
+        /// seen in the wild — a false positive stops a friend's film for
+        /// nothing, which is worse than missing an ad entirely.
+        var adActionable: Bool { adBits & 3 != 0 }
     }
 
     private func parseMediaResult(_ output: String) -> MediaResult? {
@@ -926,7 +1107,8 @@ final class PlayerBridge {
                 poster: object["poster"] as? String ?? "",
                 title: object["title"] as? String ?? "",
                 url: object["url"] as? String,
-                fullscreen: object["fullscreen"] as? Bool
+                fullscreen: object["fullscreen"] as? Bool,
+                adBits: (object["ad"] as? NSNumber)?.intValue ?? 0
             )
         }
         let parts = output.split(separator: "|", maxSplits: 3, omittingEmptySubsequences: false)
@@ -1070,6 +1252,17 @@ final class PlayerBridge {
             // A friend synced but our player is closed — say so (throttled)
             // instead of silently diverging.
             queue.async { self.noteCommandResult("SOFA_PLAYER_NOT_OPEN", player: player) }
+            return
+        }
+        // While WE are in a break, the player is showing an ad and its clock is
+        // the ad's. Executing a friend's play/pause/seek/tick against it would
+        // scrub the ad, and their paused-tick repair would pause an ad that
+        // never ends — a YouTube pre-roll that is paused stays on screen
+        // forever, so nothing would ever clear the break. Armed on the RAW
+        // flag, not the announced one: the deadlock window opens on the first
+        // frame of the ad, long before we have decided to tell anyone.
+        if rawAdSince != nil, ["play", "pause", "seek", "tick"].contains(msg.type) {
+            SyncTrace.log("ad: dropped incoming \(msg.type)")
             return
         }
         let latency = msg.latencySeconds
