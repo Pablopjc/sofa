@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.71-generic";
+  const VERSION = "0.1.78-generic";
   // Derived, never written out a second time: Sofa builds the event name it
   // dispatches as "sofa-theater-command-" + the VERSION it parses out of this
   // file, so a hand-typed copy that lags a version bump is a listener bound to
@@ -139,7 +139,39 @@
     // there is no wrapper to narrow. Size the video itself; installLayout then
     // also marks the container so the absolutely-positioned control overlay
     // sitting next to the video is pulled in with it instead of staying wide.
-    return child || video;
+    const target = child || video;
+    if (fillsViewport(target)) return target;
+
+    // The walk above assumes the site fullscreened its player. Movistar Plus+
+    // fullscreens the DOCUMENT instead and hangs the player off <body> as a
+    // fixed, viewport-filling overlay, so "outermost normal-flow descendant"
+    // lands on <body> — which is only as tall as the page sitting behind the
+    // player (269px of a 949px viewport). Theater measured that, saw it did not
+    // cover, and reverted.
+    //
+    // When that happens, take the outermost ancestor that DOES fill the
+    // viewport. Narrowing a fixed overlay works for the same reason narrowing
+    // anything above it does not: its containing block is the viewport, so the
+    // width lands on the element the viewer is actually looking at.
+    let best = null;
+    let node2 = video;
+    while (node2 && node2 !== fs) {
+      if (fillsViewport(node2)) best = node2;
+      node2 = node2.parentElement;
+    }
+    return best || target;
+  }
+
+  /// Does this element already span the viewport top to bottom, flush left?
+  ///
+  /// Height and left, never width: Theater only ever narrows width, and the
+  /// MutationObserver re-runs the target hunt on a page that is already
+  /// narrowed. Testing width would make the answer flip mid-session.
+  function fillsViewport(element) {
+    if (!element || !element.getBoundingClientRect) return false;
+    const rect = element.getBoundingClientRect();
+    return Math.abs(rect.left) <= 4 && Math.abs(rect.top) <= 4 &&
+      rect.width > 0 && rect.height >= innerHeight - 4;
   }
 
   /// When the sized element IS the video, its siblings inside the fullscreen
