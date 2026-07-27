@@ -124,7 +124,8 @@ final class PlayerBridge {
     ///
     /// Returns a bitfield so the trace log can tell the signals apart:
     /// 1 = YouTube ad-showing, 2 = YouTube ad-interrupting,
-    /// 4 = Prime ad countdown has text, 8 = Prime ad-resume notice is visible.
+    /// 4 = Prime ad countdown has text, 8 = Prime ad-resume notice is visible,
+    /// 16 = Disney+ player is in an interstitial.
     private static let adDetectJS =
         // Visible for real: an ad overlay inside a container the site has faded
         // out is not on screen. Opacity does NOT cascade into a descendant's
@@ -151,7 +152,16 @@ final class PlayerBridge {
         "var t=rt.querySelector('.atvwebplayersdk-ad-timer-countdown');" +
         "if(t&&(t.textContent||'').trim().length>0)b=b|4;" +
         "var m=rt.querySelector('.atvwebplayersdk-ad-resume-message');" +
-        "if(sofaAdVis(m))b=b|8;return b}return 0}"
+        "if(sofaAdVis(m))b=b|8;return b}" +
+        // Disney+ says it outright on the player container. Note the sibling
+        // class `has-interstitials`, which is NOT this: it means the title has
+        // ad breaks somewhere in it and stays on for the whole film, so reading
+        // it as "an ad is playing" would pause the room from the opening credits
+        // to the end. Only `interstitial-ad-playing` is the live state.
+        "if(h.indexOf('disneyplus.')>-1||h.indexOf('disney.')>-1){" +
+        "var dp=(v&&v.closest?v.closest('.btm-media-player'):null)||document.querySelector('.btm-media-player');" +
+        "if(dp&&dp.classList&&dp.classList.contains('interstitial-ad-playing'))b=b|16;return b}" +
+        "return 0}"
 
     /// One definition of "the page is in a fullscreen that holds the site
     /// player", returning that player element or null. The playback poll and
@@ -1099,7 +1109,15 @@ final class PlayerBridge {
         /// obvious signal — but through that entire real break it stayed
         /// `visibility: hidden`. It has no observed positive state, so it is
         /// measured for the trace and trusted for nothing.
-        static let actionable = 1 | 2 | 4
+        /// Disney+ (16) joined on the same terms, same day: captured live with
+        /// `interstitial-ad-playing` on `.btm-media-player` during a real break,
+        /// and absent from that container's class list in an earlier capture of
+        /// ordinary playback. Disney+ inserts ads client-side rather than
+        /// stitching them in — during the break the `<video>` reports the AD's
+        /// own duration (20 s in the capture) instead of the film's, so the clock
+        /// this freezing protects is not merely offset, it belongs to a
+        /// completely different timeline.
+        static let actionable = 1 | 2 | 4 | 16
         var adActionable: Bool { adBits & Self.actionable != 0 }
     }
 
