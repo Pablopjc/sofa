@@ -1087,11 +1087,20 @@ final class PlayerBridge {
         let fullscreen: Bool?
         /// Bitfield from `adDetectJS`; 0 on players that cannot report ads.
         var adBits: Int = 0
-        /// Only YouTube's signal is acted on. Prime's is measured and traced
-        /// but never allowed to pause anyone until a real Prime break has been
-        /// seen in the wild — a false positive stops a friend's film for
-        /// nothing, which is worse than missing an ad entirely.
-        var adActionable: Bool { adBits & 3 != 0 }
+        /// Which signals are trusted enough to stop someone else's film.
+        ///
+        /// YouTube's two (1, 2) always were. Prime's countdown (4) joined them
+        /// on 2026-07-27, when a real break was finally captured: the countdown
+        /// read "Ad0:18" in a 98x40 box, where the same element is empty and
+        /// 0x0 in every no-ad sample taken across two different titles.
+        ///
+        /// Prime's ad-resume notice (8) is deliberately NOT here. It reads
+        /// "Your video continues here after the break", so it looked like the
+        /// obvious signal — but through that entire real break it stayed
+        /// `visibility: hidden`. It has no observed positive state, so it is
+        /// measured for the trace and trusted for nothing.
+        static let actionable = 1 | 2 | 4
+        var adActionable: Bool { adBits & Self.actionable != 0 }
     }
 
     private func parseMediaResult(_ output: String) -> MediaResult? {
