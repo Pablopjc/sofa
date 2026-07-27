@@ -236,6 +236,22 @@ hay una sola `pageFullscreenTargetJS` (`function sofaFSTarget()`) que usan tanto
 `browserGetJS` como `compatiblePageFullscreenJS`. Si añades una tercera pregunta
 sobre fullscreen, reutilízala; no la copies.
 
+**Una página puede tener varios reproductores reales a la vez (Prime Video).**
+En `primevideo.com` la ficha del título mantiene vivo un preview silenciado
+*detrás* del reproductor a pantalla completa — tres `<video>`, los tres con el
+mismo `id` (`ATVWebPlayerHLSVideoSurface`), así que `document.querySelector('#…')`
+devuelve el equivocado (cuidado al diagnosticar: acota siempre a
+`fullscreenElement.querySelector('video')`). Peor: si ese preview se reproduce
+mientras la película está pausada, gana la heurística de `vscore` (+1e12 por
+estar reproduciendo) y Sofa emitía el reloj del tráiler — medido: `time 24.7,
+playing false` → `time 0, playing true`, que arrastra a toda la sala al 0:00.
+Desde 0.1.72 `bv()` restringe el conjunto a los `<video>` que hay **dentro del
+elemento en fullscreen** cuando existe alguno: si la página está en pantalla
+completa, lo que el espectador ve está ahí dentro y punto. Va después de las
+ramas de Netflix y YouTube, que retornan antes, así que no puede cambiar lo que
+eligen esas dos. Theater en Prime Video no necesitó nada: entra por el camino
+genérico.
+
 **Reproductores cuyo `<video>` cuelga directo del elemento en fullscreen**
 (HBO Max) necesitan dos reglas de anchura —el vídeo y sus hermanos, vía
 `data-sofa-theater-generic-box`— y gana la segunda por orden. Por eso

@@ -78,6 +78,18 @@ final class PlayerBridge {
         "if(location.hostname.indexOf('youtube')>-1){" +
         "var y=document.querySelector('#movie_player video.html5-main-video,#movie_player video');if(y)return y}" +
         "var pool=vs.filter(function(v){return !vpreview(v)});if(!pool.length)return null;" +
+        // Structure beats the heuristic whenever it can answer: a page in
+        // fullscreen is showing the viewer a video inside THAT element, so a
+        // video anywhere else cannot be the one being watched no matter how
+        // attractive it scores. Prime Video is where this stops being academic
+        // — its detail page keeps a muted hero preview alive behind the
+        // fullscreen player, and a preview that starts playing while the film
+        // is paused outscores the film (+1e12 for playing) and made Sofa
+        // broadcast the trailer's clock, yanking the whole party to 0:00.
+        // Placed after the Netflix and YouTube branches, which return earlier,
+        // so it cannot change what those two pick.
+        "var fsel=document.fullscreenElement||document.webkitFullscreenElement;" +
+        "if(fsel){var inside=pool.filter(function(v){return fsel.contains(v)});if(inside.length)pool=inside}" +
         "pool.sort(function(a,b){return vscore(b)-vscore(a)});return pool[0]}"
 
     /// One definition of "the page is in a fullscreen that holds the site
