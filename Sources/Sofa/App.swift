@@ -185,16 +185,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: panel, queue: .main
         ) { [weak self] _ in
-            // Behave like a popover: hide on blur unless media is loaded/playing.
+            // Behave like a popover: clicking anywhere outside closes it,
+            // including mid-party. (Theater hides the panel explicitly on its
+            // own, so this only governs ordinary use.)
+            //
             // Deferred one turn so a click on the tray icon (which itself makes
             // the panel resign key just before togglePanel reopens it) doesn't
             // still queue up this close — re-check key status at execution
             // time, since by then a fresh reopen would have restored it.
             DispatchQueue.main.async {
                 guard let panel = self?.panel, !panel.isKeyWindow else { return }
-                if !AppState.shared.mediaActive {
-                    panel.orderOut(nil)
-                }
+                // Losing key *within* Sofa is not "clicking outside": the emoji
+                // palette parks its catcher field inside this very panel, and
+                // an NSAlert runs modal over it. Closing then would pull the
+                // ground out from under both. Only a genuine switch to another
+                // application dismisses the panel.
+                guard !NSApp.isActive else { return }
+                panel.orderOut(nil)
             }
         }
 
