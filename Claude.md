@@ -107,6 +107,41 @@ supresión ni la línea base de detección.
 
 ---
 
+### Theater: the player is not always inside what the site fullscreens
+
+Movistar Plus+ (0.1.78) fullscreens `document.documentElement` and hangs the
+real player off `<body>` as a `position: fixed` overlay (`z-index: 999999`).
+`findGenericTarget`'s walk — outermost normal-flow descendant of the fullscreen
+element containing the video — therefore returns `<body>`, which is only as tall
+as the page hidden behind the overlay (269px of a 949px viewport). installLayout
+measured it, saw it did not cover, and reverted: Theater never opened, with no
+visible error.
+
+The fallback only fires when the usual answer fails `fillsViewport`, so the
+services that already work never reach it (Prime's `.f1prfwap`, Disney's
+`.btm-media-clients` and HBO's bare `<video>` are all `0,0 1512x949`). When it
+does fire it takes the outermost ancestor of the video that fills the viewport —
+the fixed overlay — and narrowing that works because a fixed element's
+containing block IS the viewport.
+
+`fillsViewport` deliberately tests height and left, never width: the
+MutationObserver re-runs the target hunt while Theater is active and the target
+is already narrowed, so a width test would flip the answer mid-session.
+
+### Ad detection: prefer the class that describes the state, not the situation
+
+Two services shipped a near-miss signal next to the real one. Prime's
+`.atvwebplayersdk-ad-resume-message` literally reads "Your video continues here
+after the break" and stays `visibility: hidden` through the entire break —
+useless. Disney's `has-interstitials` appears next to `interstitial-ad-playing`
+and sounds like a permanent "this title has ads" marker; it is not (it cleared
+when the break ended), but nothing measured says what it does track.
+
+Both were excluded for the same reason: only trust a signal whose positive AND
+negative state you have watched flip on a real break. Guessing costs a friend's
+film stopping for nothing.
+
+
 ## 4. Trampas conocidas (esto es lo que te ahorrará horas)
 
 Cada punto se descubrió con un fallo real. No "simplificar" ninguno sin

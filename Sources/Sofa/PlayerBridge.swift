@@ -153,11 +153,13 @@ final class PlayerBridge {
         "if(t&&(t.textContent||'').trim().length>0)b=b|4;" +
         "var m=rt.querySelector('.atvwebplayersdk-ad-resume-message');" +
         "if(sofaAdVis(m))b=b|8;return b}" +
-        // Disney+ says it outright on the player container. Note the sibling
-        // class `has-interstitials`, which is NOT this: it means the title has
-        // ad breaks somewhere in it and stays on for the whole film, so reading
-        // it as "an ad is playing" would pause the room from the opening credits
-        // to the end. Only `interstitial-ad-playing` is the live state.
+        // Disney+ says it outright on the player container. A sibling class
+        // `has-interstitials` shows up alongside it; both were gone when the
+        // break ended, so it is NOT the permanent "this title has ads" marker it
+        // reads like — but it is also not self-describing about the live state,
+        // and nothing was measured that pins down what it actually tracks.
+        // `interstitial-ad-playing` says exactly what is being asked, so it is
+        // the one trusted; the vaguer sibling stays unused rather than guessed at.
         "if(h.indexOf('disneyplus.')>-1||h.indexOf('disney.')>-1){" +
         "var dp=(v&&v.closest?v.closest('.btm-media-player'):null)||document.querySelector('.btm-media-player');" +
         "if(dp&&dp.classList&&dp.classList.contains('interstitial-ad-playing'))b=b|16;return b}" +
