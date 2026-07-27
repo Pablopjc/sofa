@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.78-generic";
+  const VERSION = "0.1.79-generic";
   // Derived, never written out a second time: Sofa builds the event name it
   // dispatches as "sofa-theater-command-" + the VERSION it parses out of this
   // file, so a hand-typed copy that lags a version bump is a listener bound to
@@ -40,6 +40,10 @@
   const MIN_RESERVED_WIDTH = 260;
   const MAX_RESERVED_WIDTH = 600;
   const MIN_VIDEO_WIDTH = 640;
+  // How far a box may sit from exactly covering the viewport and still count.
+  // Shared so findGenericTarget's "does this fill the screen?" and
+  // installLayout's accept/revert check can never drift apart.
+  const COVER_TOLERANCE = 6;
 
   const html = document.documentElement;
   if (!html) return;
@@ -167,11 +171,21 @@
   /// Height and left, never width: Theater only ever narrows width, and the
   /// MutationObserver re-runs the target hunt on a page that is already
   /// narrowed. Testing width would make the answer flip mid-session.
+  ///
+  /// The height test is an EQUALITY against innerHeight, sharing installLayout's
+  /// tolerance, because installLayout is what this has to agree with: it rejects
+  /// the chosen box unless |height - innerHeight| <= COVER_TOLERANCE. A mere
+  /// lower bound would quietly disagree — on a document-fullscreen site whose
+  /// page scrolls, <body> is TALLER than the viewport, so it would pass here,
+  /// be returned as the target, and be rejected downstream, and the fallback
+  /// that exists for exactly that shape would never get to run. Movistar Plus+
+  /// escapes that only because its <body> happens to be shorter than the
+  /// viewport (269px of 949), which is luck, not design.
   function fillsViewport(element) {
     if (!element || !element.getBoundingClientRect) return false;
     const rect = element.getBoundingClientRect();
     return Math.abs(rect.left) <= 4 && Math.abs(rect.top) <= 4 &&
-      rect.width > 0 && rect.height >= innerHeight - 4;
+      rect.width > 0 && Math.abs(rect.height - innerHeight) <= COVER_TOLERANCE;
   }
 
   /// When the sized element IS the video, its siblings inside the fullscreen
@@ -777,7 +791,8 @@
     const rect = target.getBoundingClientRect();
     const expectedWidth = Math.max(0, innerWidth - effectiveReservedWidth());
     const geometryOK = Math.abs(rect.left) <= 4 && Math.abs(rect.top) <= 4 &&
-      Math.abs(rect.width - expectedWidth) <= 6 && Math.abs(rect.height - innerHeight) <= 6;
+      Math.abs(rect.width - expectedWidth) <= COVER_TOLERANCE &&
+      Math.abs(rect.height - innerHeight) <= COVER_TOLERANCE;
     if (!geometryOK) {
       clearLayout(false);
       setStatus(
