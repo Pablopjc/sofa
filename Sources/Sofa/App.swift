@@ -44,6 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var hostingView: NSHostingView<ContentView>!
     private var pendingJoin: String?
     private var cancellables = Set<AnyCancellable>()
+    /// Watches for a real click somewhere outside Sofa while the panel is open.
+    private var outsideClickMonitor: Any?
 
     // sofa:// links (modern AppKit delegate API — AppKit wires up the Apple
     // Event handler itself; registering one manually gets overwritten).
@@ -173,36 +175,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NotificationCenter.default.addObserver(
             forName: .sofaHidePanel, object: nil, queue: .main
         ) { [weak self] _ in
-            DispatchQueue.main.async { self?.panel.orderOut(nil) }
+            DispatchQueue.main.async { self?.hidePanel() }
+        }
+
+        // The system emoji palette lives in another process, so picking an
+        // emoji reads as a click outside Sofa — but the pick is typed into a
+        // field inside this very panel, so closing would break the picker.
+        // Stand down until the panel is next opened.
+        NotificationCenter.default.addObserver(
+            forName: .sofaSuspendAutoHide, object: nil, queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.async { self?.stopWatchingOutsideClicks() }
         }
 
         NotificationCenter.default.addObserver(
             forName: .sofaShowPanel, object: nil, queue: .main
         ) { [weak self] _ in
             DispatchQueue.main.async { self?.showPanel() }
-        }
-
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.didResignKeyNotification, object: panel, queue: .main
-        ) { [weak self] _ in
-            // Behave like a popover: clicking anywhere outside closes it,
-            // including mid-party. (Theater hides the panel explicitly on its
-            // own, so this only governs ordinary use.)
-            //
-            // Deferred one turn so a click on the tray icon (which itself makes
-            // the panel resign key just before togglePanel reopens it) doesn't
-            // still queue up this close — re-check key status at execution
-            // time, since by then a fresh reopen would have restored it.
-            DispatchQueue.main.async {
-                guard let panel = self?.panel, !panel.isKeyWindow else { return }
-                // Losing key *within* Sofa is not "clicking outside": the emoji
-                // palette parks its catcher field inside this very panel, and
-                // an NSAlert runs modal over it. Closing then would pull the
-                // ground out from under both. Only a genuine switch to another
-                // application dismisses the panel.
-                guard !NSApp.isActive else { return }
-                panel.orderOut(nil)
-            }
         }
 
         if let host = pendingJoin {
@@ -309,16 +298,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // MARK: - Panel toggling
 
     @objc private func togglePanel() {
-        // isVisible alone isn't enough: a panel can be ordered in but not the
-        // focused surface (e.g. it lost key status to another app or window
-        // without yet being closed). Only treat a click as "dismiss" when the
-        // panel is the thing actually in front; otherwise always bring it
-        // forward, so a click never silently does nothing.
-        if panel.isVisible, panel.isKeyWindow {
-            panel.orderOut(nil)
+        // The status item belongs to Sofa, so clicking it never trips the
+        // outside-click monitor — visibility alone is the honest answer here.
+        if panel.isVisible {
+            hidePanel()
         } else {
             showPanel()
         }
+    }
+
+    /// Dismiss on a click outside — driven by the click itself, never by focus.
+    ///
+    /// Hiding when the panel merely lost key looked equivalent and was not:
+    /// clicking a menu-bar item does not activate its app, so `NSApp.activate`
+    /// in `showPanel` races the system's own focus handling and macOS sometimes
+    /// hands focus straight back to the app the user came from. The panel then
+    /// resigned key with nobody having clicked anything, and the close fired on
+    /// a panel that had just opened — the icon looked dead. A global mouse-down
+    /// cannot be conjured by that race: no click, no dismissal.
+    private func startWatchingOutsideClicks() {
+        guard outsideClickMonitor == nil else { return }
+        // Global monitors observe only events delivered to *other* apps, so
+        // clicks inside the panel and on the status item never arrive here.
+        // (Mouse events need no Accessibility grant; keyboard ones would.)
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor in self?.hidePanel() }
+        }
+    }
+
+    private func stopWatchingOutsideClicks() {
+        if let monitor = outsideClickMonitor { NSEvent.removeMonitor(monitor) }
+        outsideClickMonitor = nil
+    }
+
+    private func hidePanel() {
+        stopWatchingOutsideClicks()
+        panel.orderOut(nil)
     }
 
     private func showPanel() {
@@ -338,6 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // to the panel itself instead.
         panel.makeFirstResponder(nil)
         NSApp.activate(ignoringOtherApps: true)
+        startWatchingOutsideClicks()
     }
 
     private func positionPanel() {

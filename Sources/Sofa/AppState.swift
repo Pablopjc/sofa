@@ -6,6 +6,10 @@ extension Notification.Name {
     /// Asks the app delegate to hide the menu bar panel (eg. entering Theater).
     static let sofaHidePanel = Notification.Name("SofaHidePanel")
     static let sofaShowPanel = Notification.Name("SofaShowPanel")
+    /// Something inside Sofa is about to draw the user's clicks into another
+    /// process (the system emoji palette), where they would otherwise read as
+    /// "clicked outside". Stop dismissing the panel until it is reopened.
+    static let sofaSuspendAutoHide = Notification.Name("SofaSuspendAutoHide")
 }
 
 /// Which player Sofa is syncing.

@@ -39,6 +39,10 @@ struct EmojiPickerButton: NSViewRepresentable {
                 catcher.delegate = self
                 window.contentView?.addSubview(catcher)
             }
+            // The palette runs in its own process, so every pick would read as
+            // a click outside the panel and dismiss it — taking this catcher
+            // down with it. Stand the dismissal down until the panel reopens.
+            NotificationCenter.default.post(name: .sofaSuspendAutoHide, object: nil)
             NSApp.activate(ignoringOtherApps: true)
             window.makeFirstResponder(catcher)
             NSApp.orderFrontCharacterPalette(catcher)
