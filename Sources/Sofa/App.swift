@@ -318,14 +318,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// cannot be conjured by that race: no click, no dismissal.
     private func startWatchingOutsideClicks() {
         guard outsideClickMonitor == nil else { return }
-        // Global monitors observe only events delivered to *other* apps, so
-        // clicks inside the panel and on the status item never arrive here.
-        // (Mouse events need no Accessibility grant; keyboard ones would.)
+        // Global monitors see events delivered to *other* apps, so clicks
+        // inside the panel never arrive here. (Mouse events need no
+        // Accessibility grant; keyboard ones would.) The menu bar is the
+        // exception — see statusItemFrame.
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         ) { [weak self] _ in
-            Task { @MainActor in self?.hidePanel() }
+            // Read the location now: by the time the hop to the main actor
+            // completes, the cursor may have moved on.
+            let location = NSEvent.mouseLocation
+            Task { @MainActor in
+                guard let self else { return }
+                // A click on Sofa's own status item is a toggle, and it does
+                // reach this monitor — the menu bar routes it through the
+                // system rather than straight to us. Dismissing here as well
+                // would race togglePanel: the panel closes, togglePanel then
+                // finds it hidden and reopens it, and the icon looks as if it
+                // refuses to close the window. Let togglePanel own that click.
+                guard !(self.statusItemFrame()?.contains(location) ?? false) else { return }
+                self.hidePanel()
+            }
         }
+    }
+
+    /// The status item's button in screen coordinates, padded slightly so a
+    /// click on the very edge of the icon still counts as hitting it.
+    private func statusItemFrame() -> NSRect? {
+        guard let button = statusItem?.button, let window = button.window else { return nil }
+        let frame = window.convertToScreen(button.convert(button.bounds, to: nil))
+        return frame.insetBy(dx: -3, dy: -3)
     }
 
     private func stopWatchingOutsideClicks() {
