@@ -147,6 +147,23 @@ film stopping for nothing.
 Cada punto se descubrió con un fallo real. No "simplificar" ninguno sin
 reproducir antes el problema.
 
+**Cerrar el panel "al perder el foco" hace que el icono parezca muerto
+(0.1.81).** Pulsar un icono de la barra de menús **no activa** su app, así que
+el `NSApp.activate(ignoringOtherApps:)` de `showPanel` compite con la gestión
+de foco del sistema y macOS a veces se lo devuelve a la app anterior. El panel
+se abría bien y `didResignKey` llegaba acto seguido *sin que nadie hubiera
+pulsado nada*, cerrándolo: para el usuario, "pulso el icono y no pasa nada".
+Instrumentar con `NSLog` fue lo único que lo demostró; para verlo, muestrear el
+número de ventanas cada 30 ms (`1111100000…` = se abrió y se cerró sola). El
+cierre cuelga ahora de un `addGlobalMonitorForEvents` de mouse-down: sin clic
+no hay cierre. Los monitores globales solo ven eventos de **otras** apps, así
+que ni el propio panel ni el status item los disparan, y los de ratón **no**
+requieren permiso de Accesibilidad (los de teclado sí). Excepción real: la
+paleta de emojis del sistema es otro proceso, pero escribe en un campo *dentro*
+del panel — un clic ahí dispara el monitor **y** además hace que el panel
+pierda `key`, así que ninguna señal por separado la distingue;
+`EmojiPickerButton` publica `.sofaSuspendAutoHide` antes de abrirla.
+
 **AppleScript relanza apps cerradas.** `tell application "Safari"` **arranca**
 Safari si no está abierto. Con un sondeo cada 0,85 s, esto resucitaba la app
 cada vez que el usuario la cerraba. Siempre comprobar `PlayerChoice.isRunning`
