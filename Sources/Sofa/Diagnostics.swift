@@ -225,6 +225,214 @@ enum ResourceUsage {
     }
 }
 
+// MARK: - Performance session
+
+/// A "record what Sofa costs while I use it" session, driven from the ⋯ menu
+/// so nobody needs a Terminal. Samples every 30 s and, on stop, writes a
+/// report plus a CSV to the Desktop.
+///
+/// It measures the WINDOW between start and stop, not totals since launch:
+/// "Sofa used 0.4% while we watched a film" is the question being asked, and
+/// a lifetime average buries it under however long the app sat idle first.
+/// Each sample also records what Sofa was doing, so the report can separate
+/// the cost of a live party from the cost of sitting in the menu bar.
+@MainActor
+final class PerformanceSession {
+    static let shared = PerformanceSession()
+
+    private struct Sample {
+        let at: Date
+        let cpuSeconds: Double
+        let footprintMB: Double
+        let idleWakeups: UInt64
+        let inParty: Bool
+        let inTheater: Bool
+        let player: String
+    }
+
+    private var samples: [Sample] = []
+    private var timer: Timer?
+    private(set) var startedAt: Date?
+
+    var isRunning: Bool { startedAt != nil }
+
+    private init() {}
+
+    func start() {
+        guard !isRunning else { return }
+        samples.removeAll()
+        startedAt = Date()
+        DiagLog.log("perf: measurement started")
+        take()
+        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.take() }
+        }
+        timer.tolerance = 5
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    private func take() {
+        guard let usage = ResourceUsage.current() else { return }
+        let state = AppState.shared
+        samples.append(Sample(
+            at: Date(),
+            cpuSeconds: usage.cpuSeconds,
+            footprintMB: usage.footprintMB,
+            idleWakeups: usage.idleWakeups,
+            inParty: state.inRoom,
+            inTheater: state.theaterActive,
+            player: state.playerChoice.rawValue
+        ))
+    }
+
+    /// Ends the session and writes the files. Returns the report URL.
+    @discardableResult
+    func stop() -> URL? {
+        guard let started = startedAt else { return nil }
+        take()
+        timer?.invalidate()
+        timer = nil
+        startedAt = nil
+
+        guard samples.count >= 2, let first = samples.first, let last = samples.last else {
+            DiagLog.log("perf: measurement too short to report")
+            samples.removeAll()
+            return nil
+        }
+
+        let elapsed = last.at.timeIntervalSince(first.at)
+        let cpuUsed = last.cpuSeconds - first.cpuSeconds
+        let wakeups = last.idleWakeups - first.idleWakeups
+        let averagePercent = elapsed > 0 ? 100 * cpuUsed / elapsed : 0
+
+        // Per-interval detail: the peak, and the split between party and idle.
+        var peakPercent = 0.0
+        var partySeconds = 0.0, partyCPU = 0.0
+        var idleSeconds = 0.0, idleCPU = 0.0
+        for (previous, current) in zip(samples, samples.dropFirst()) {
+            let span = current.at.timeIntervalSince(previous.at)
+            guard span > 0 else { continue }
+            let cpu = current.cpuSeconds - previous.cpuSeconds
+            peakPercent = max(peakPercent, 100 * cpu / span)
+            // Attribute the interval to whatever was true when it ENDED.
+            if current.inParty {
+                partySeconds += span; partyCPU += cpu
+            } else {
+                idleSeconds += span; idleCPU += cpu
+            }
+        }
+        let peakFootprint = samples.map(\.footprintMB).max() ?? last.footprintMB
+        let theaterSamples = samples.filter(\.inTheater).count
+
+        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)[0]
+        let stamp = Self.fileStamp.string(from: started)
+        let reportURL = desktop.appendingPathComponent("Sofa Performance \(stamp).txt")
+        let csvURL = desktop.appendingPathComponent("Sofa Performance \(stamp).csv")
+
+        func percent(_ cpu: Double, _ seconds: Double) -> String {
+            seconds > 0 ? String(format: "%.2f%%", 100 * cpu / seconds) : "—"
+        }
+        /// Minutes only would print "0 min" for a 31 s stretch, which reads
+        /// as a broken report rather than a short one.
+        func duration(_ seconds: Double) -> String {
+            seconds < 60
+                ? String(format: "%.0f s", seconds)
+                : String(format: "%.0f min", seconds / 60)
+        }
+
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let report = """
+        Sofa — performance measurement
+        \(DiagLog.tailHeaderDate())
+        Sofa \(version) · macOS \(ProcessInfo.processInfo.operatingSystemVersionString)
+
+        Measured for \(duration(elapsed)) over \(samples.count) samples.
+
+        CPU
+          Used         : \(String(format: "%.1f", cpuUsed)) s of CPU
+          Average      : \(String(format: "%.2f%%", averagePercent)) of one core
+          Peak sample  : \(String(format: "%.2f%%", peakPercent))
+
+          While in a watch party : \(percent(partyCPU, partySeconds)) \
+        (\(duration(partySeconds)))
+          While idle in the bar  : \(percent(idleCPU, idleSeconds)) \
+        (\(duration(idleSeconds)))
+          Samples with Theater on: \(theaterSamples)
+
+        Memory (footprint, the number Activity Monitor shows)
+          Start : \(String(format: "%.0f MB", first.footprintMB))
+          End   : \(String(format: "%.0f MB", last.footprintMB)) \
+        (\(String(format: "%+.0f MB", last.footprintMB - first.footprintMB)))
+          Peak  : \(String(format: "%.0f MB", peakFootprint))
+
+        Energy
+          Idle wakeups : \(wakeups) total · \
+        \(String(format: "%.1f/s", elapsed > 0 ? Double(wakeups) / elapsed : 0))
+          (macOS starts calling an app an energy hog around 150/s.)
+
+        How to read this
+          - Idle in the menu bar should be a small fraction of 1%. Measured
+            baseline on the developer's Mac: about 0.07%.
+          - During a party it is higher on purpose: Sofa asks the player where
+            it is several times a second, which is what keeps you in sync.
+          - Memory that climbs and never comes back down over a long session
+            is the most useful signal here — that would be a leak.
+          - Sample-by-sample detail is in the .csv next to this file.
+
+        Send this file (and the .csv) to Pablo.
+
+        """
+
+        var csv = "timestamp,elapsed_s,cpu_percent_interval,cpu_total_s,footprint_mb,in_party,in_theater,player\n"
+        for (index, sample) in samples.enumerated() {
+            let elapsedHere = sample.at.timeIntervalSince(first.at)
+            var intervalPercent = ""
+            if index > 0 {
+                let previous = samples[index - 1]
+                let span = sample.at.timeIntervalSince(previous.at)
+                if span > 0 {
+                    intervalPercent = String(format: "%.2f", 100 * (sample.cpuSeconds - previous.cpuSeconds) / span)
+                }
+            }
+            csv += [
+                Self.timeStamp.string(from: sample.at),
+                String(format: "%.0f", elapsedHere),
+                intervalPercent,
+                String(format: "%.2f", sample.cpuSeconds),
+                String(format: "%.1f", sample.footprintMB),
+                sample.inParty ? "yes" : "no",
+                sample.inTheater ? "yes" : "no",
+                sample.player,
+            ].joined(separator: ",") + "\n"
+        }
+
+        samples.removeAll()
+        do {
+            try report.write(to: reportURL, atomically: true, encoding: .utf8)
+            try csv.write(to: csvURL, atomically: true, encoding: .utf8)
+        } catch {
+            DiagLog.log("perf: FAILED to write report — \(error.localizedDescription)")
+            return nil
+        }
+        DiagLog.log(String(format: "perf: measurement saved (%.0f s, %.2f%% avg)", elapsed, averagePercent))
+        return reportURL
+    }
+
+    private static let fileStamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        return formatter
+    }()
+    private static let timeStamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+}
+
 // MARK: - Diagnostic report
 
 /// Gathers everything needed to debug a friend's Mac remotely into one text

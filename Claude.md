@@ -532,7 +532,12 @@ alcanzabilidad del relay y la cola del log. Headless para soporte:
 SOFA_DIAG_REPORT=1 /Applications/Sofa.app/Contents/MacOS/Sofa   # escribe en el Escritorio y sale
 ```
 
-Medir consumo (0.1.84): `scripts/measure-sofa.sh [minutos]` funciona con
+Medir consumo (0.1.84): lo normal es el menu ⋯ -> **"Measure Sofa's CPU &
+Memory…"**, que graba una sesion (muestra cada 30 s), y al pararlo deja
+informe + CSV en el Escritorio; separa el consumo EN FIESTA del consumo en
+reposo, porque son ordenes de magnitud distintos (medido: ~0,2% en reposo,
+~1-2% en fiesta). Se autoguarda si se sale de la app a media medicion.
+Alternativa sin tocar la app: `scripts/measure-sofa.sh [minutos]` funciona con
 CUALQUIER versión instalada, sin compilar y sin contraseña — muestrea y deja
 informe + CSV en el Escritorio. Es lo que puede ejecutar un amigo con la
 versión publicada antigua. Detalles que importan: el %CPU de `ps` es la media

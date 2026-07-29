@@ -450,6 +450,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // A log that ends without this line means the app died or was killed —
         // itself a diagnostic clue.
         DiagLog.log("terminate: clean quit")
+        // Quitting mid-measurement should still produce the file rather than
+        // silently throwing the session away.
+        AppState.shared.finishPerformanceMeasurementIfNeeded()
         SocialService.shared.stop()
         PlayerBridge.shared.stop()
         AppState.shared.stopCallAudio()

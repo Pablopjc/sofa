@@ -206,6 +206,11 @@ struct TitleBar: View {
                 }
                 Button("Setup Check…") { state.showingSetupCheck = true }
                 Button("Save Diagnostic Report") { state.saveDiagnosticReport() }
+                Button(state.measuringPerformance
+                       ? "Stop Measuring & Save Report"
+                       : "Measure Sofa's CPU & Memory…") {
+                    state.togglePerformanceMeasurement()
+                }
                 Divider()
                 Button("Try it solo — Test Zone") { state.enterTestZone() }
                     .disabled(state.inRoom || state.hosting || state.joining)

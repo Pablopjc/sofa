@@ -276,6 +276,9 @@ final class AppState: ObservableObject {
 
     /// Permission pre-flight screen (from the welcome tour or the ⋯ menu).
     @Published var showingSetupCheck = false
+    /// Mirrors PerformanceSession.isRunning so the ⋯ menu item can retitle
+    /// itself (this toolchain has no SwiftUI @State to hold it locally).
+    @Published var measuringPerformance = false
 
     // Keep the panel open on blur while something is loaded/playing.
     var mediaActive = false
@@ -401,6 +404,34 @@ final class AppState: ObservableObject {
                 UserDefaults.standard.set(newValue, forKey: "SofaAXPrompted")
             }
         }
+    }
+
+    /// Starts or ends a "how much does Sofa cost while I use it" recording.
+    /// One menu item does both, so the whole flow is: click, watch a film,
+    /// click again, send the file that appears.
+    func togglePerformanceMeasurement() {
+        let session = PerformanceSession.shared
+        if session.isRunning {
+            let url = session.stop()
+            measuringPerformance = false
+            if let url {
+                showToast("Measurement saved to your Desktop — send that file to Pablo.")
+                if !theaterActive { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            } else {
+                showToast("Too short to measure — let it run for a minute or two.")
+            }
+        } else {
+            session.start()
+            measuringPerformance = true
+            showToast("Measuring… use Sofa normally, then stop it from the ⋯ menu.")
+        }
+    }
+
+    /// Saves a measurement in progress rather than losing it on quit.
+    func finishPerformanceMeasurementIfNeeded() {
+        guard PerformanceSession.shared.isRunning else { return }
+        PerformanceSession.shared.stop()
+        measuringPerformance = false
     }
 
     /// Collects a full diagnostic report onto the Desktop and reveals it, so a
