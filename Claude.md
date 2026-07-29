@@ -532,6 +532,26 @@ alcanzabilidad del relay y la cola del log. Headless para soporte:
 SOFA_DIAG_REPORT=1 /Applications/Sofa.app/Contents/MacOS/Sofa   # escribe en el Escritorio y sale
 ```
 
+Medir consumo (0.1.84): `scripts/measure-sofa.sh [minutos]` funciona con
+CUALQUIER versión instalada, sin compilar y sin contraseña — muestrea y deja
+informe + CSV en el Escritorio. Es lo que puede ejecutar un amigo con la
+versión publicada antigua. Detalles que importan: el %CPU de `ps` es la media
+DESDE EL ARRANQUE, no del intervalo — hay que restar tiempos de CPU
+acumulados; `top -l 1` cuesta ~0,7 s de CPU por llamada (falsea la medida si
+se usa en el bucle), así que solo se llama al principio y al final para los
+idle wakeups; y bash no puede capturar SIGINT si el script se lanzó en
+segundo plano (la señal se hereda ignorada), así que para probar el trap hay
+que usar SIGTERM o un Terminal de verdad. El informe de diagnóstico incluye
+además una sección `[Resources]` con CPU/memoria/wakeups leídos por
+`proc_pid_rusage`. **TRAMPA**: `ri_user_time`/`ri_system_time` están en TICKS
+de Mach, no en nanosegundos pese al nombre — hay que convertirlos con
+`mach_timebase_info`. En Apple Silicon (125/3) tratarlos como ns subestima la
+CPU ~42x; en Intel el timebase es 1:1 y el fallo es invisible. Verificado
+quemando 2,00 s de CPU a propósito: 1,998 s bien convertido, 0,048 s sin
+convertir. `phys_footprint` (lo que enseña Monitor de Actividad) es bastante
+MENOR que el RSS que da `ps`: no se contradicen, miden cosas distintas.
+Línea base medida en reposo sin fiesta: ~0,07% de CPU.
+
 Flags dev: `SOFA_SIMULATE_AX_DENIED=1` simula Accesibilidad denegada (sin
 tocar el TCC real ni quemar el prompt del sistema; el flag SofaAXPrompted pasa
 a memoria). Trampas ya pagadas aquí: `UNUserNotificationCenter.current()`

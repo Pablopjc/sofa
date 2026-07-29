@@ -163,6 +163,68 @@ final class MainThreadWatchdog {
     }
 }
 
+// MARK: - Resource usage
+
+/// What Sofa has cost this Mac since launch. Cheap enough (two syscalls) to
+/// read whenever a report is generated, so every report carries its own
+/// performance evidence without anyone running a script.
+///
+/// Idle wakeups are here because they, not raw CPU, are what macOS uses to
+/// flag an app as an energy hog — a menu-bar app that polls can look free on
+/// a CPU graph while still draining a battery.
+enum ResourceUsage {
+    struct Snapshot {
+        let cpuSeconds: Double
+        let uptime: TimeInterval
+        let idleWakeups: UInt64
+        let interruptWakeups: UInt64
+        let footprintMB: Double
+
+        /// Share of ONE core, averaged over the whole life of the process.
+        var averageCPUPercent: Double {
+            uptime > 0 ? 100 * cpuSeconds / uptime : 0
+        }
+        var idleWakeupsPerSecond: Double {
+            uptime > 0 ? Double(idleWakeups) / uptime : 0
+        }
+    }
+
+    static func current() -> Snapshot? {
+        var usage = rusage_info_v4()
+        let ok = withUnsafeMutablePointer(to: &usage) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                proc_pid_rusage(getpid(), RUSAGE_INFO_V4, $0)
+            }
+        }
+        guard ok == 0 else { return nil }
+
+        // Everything below is in MACH TICKS, not nanoseconds — including
+        // ri_user_time/ri_system_time, whose names suggest otherwise. On
+        // Apple Silicon a tick is 41.67 ns, so treating them as nanoseconds
+        // under-reports CPU by ~42x; on Intel the timebase is 1:1 and the
+        // mistake is invisible, which is exactly how it would have shipped.
+        // Measured against a deliberate 2.00 s burn: 1.998 s with this
+        // conversion, 0.048 s without it.
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        let ticksToSeconds = Double(timebase.numer) / Double(timebase.denom) / 1_000_000_000
+
+        let cpuSeconds = Double(usage.ri_user_time + usage.ri_system_time) * ticksToSeconds
+        // Process age from the kernel, not a Swift static: a lazy static is
+        // initialized on first access, which in the headless report path is
+        // during the report itself — it measured the app as zero seconds old.
+        let lived = Double(mach_absolute_time() - usage.ri_proc_start_abstime) * ticksToSeconds
+
+        return Snapshot(
+            cpuSeconds: cpuSeconds,
+            uptime: lived,
+            idleWakeups: usage.ri_pkg_idle_wkups,
+            interruptWakeups: usage.ri_interrupt_wkups,
+            footprintMB: Double(usage.ri_phys_footprint) / 1_048_576
+        )
+    }
+}
+
 // MARK: - Diagnostic report
 
 /// Gathers everything needed to debug a friend's Mac remotely into one text
@@ -307,6 +369,27 @@ enum DiagnosticReport {
         sections.append("[Permissions]\n" + perms.joined(separator: "\n"))
 
         sections.append(stateSection)
+
+        // — Resources —
+        if let usage = ResourceUsage.current() {
+            let lines = [
+                String(format: "running for: %.0f min", usage.uptime / 60),
+                String(format: "cpu used: %.1f s  (avg %.2f%% of one core since launch)",
+                       usage.cpuSeconds, usage.averageCPUPercent),
+                // Footprint, not RSS: this is the number Activity Monitor
+                // shows under "Memory", and it runs far lower than the RSS
+                // that `ps` and scripts/measure-sofa.sh report (shared
+                // framework pages are excluded). The two disagreeing is
+                // expected — they are not the same measurement.
+                String(format: "memory footprint: %.0f MB (Activity Monitor's number, not RSS)",
+                       usage.footprintMB),
+                String(format: "idle wakeups: %llu  (%.1f/s — macOS flags an energy hog around 150/s)",
+                       usage.idleWakeups, usage.idleWakeupsPerSecond),
+                "interrupt wakeups: \(usage.interruptWakeups)",
+                "measured baseline, idle with no party: ~0.07% CPU",
+            ]
+            sections.append("[Resources]\n" + lines.joined(separator: "\n"))
+        }
 
         // — Relay —
         sections.append("[Network]\n" + (await relayProbe()))
