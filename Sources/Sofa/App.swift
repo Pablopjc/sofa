@@ -111,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .dropFirst() // initial value is not an event
             .sink { down in
                 DiagLog.log(down ? "relay: connection lost" : "relay: connection restored")
+                if down { PerfCounters.recordReconnect() }
             }
             .store(in: &cancellables)
 

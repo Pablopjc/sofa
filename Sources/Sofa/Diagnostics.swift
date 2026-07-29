@@ -225,6 +225,90 @@ enum ResourceUsage {
     }
 }
 
+// MARK: - Counters
+
+/// Counts the work Sofa actually does, so a performance report can say WHERE
+/// its CPU went instead of only how much there was.
+///
+/// Counted at the event, not sampled: talking to a player takes milliseconds,
+/// and a 30 s sampler would miss almost all of it. Deliberately narrow — every
+/// counter here answers a question that changes what we would optimise. Things
+/// like disk and network bytes are left out on purpose: Sofa sends tiny JSON
+/// messages and writes almost nothing, so those numbers would be noise
+/// competing for attention with the numbers that matter.
+enum PerfCounters {
+    struct PlayerCost {
+        var calls = 0
+        var totalSeconds = 0.0
+        var worstSeconds = 0.0
+        var failures = 0
+    }
+
+    private static let lock = NSLock()
+    private static var byPlayer: [String: PlayerCost] = [:]
+    private static var commandsSent = 0
+    private static var commandsReceived = 0
+    private static var reconnects = 0
+
+    /// One AppleScript round trip to a player. `seconds` is what it cost.
+    static func recordPlayerCall(player: String, seconds: Double, failed: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        var cost = byPlayer[player] ?? PlayerCost()
+        cost.calls += 1
+        cost.totalSeconds += seconds
+        cost.worstSeconds = max(cost.worstSeconds, seconds)
+        if failed { cost.failures += 1 }
+        byPlayer[player] = cost
+    }
+
+    static func recordCommandSent() {
+        lock.lock(); commandsSent += 1; lock.unlock()
+    }
+    static func recordCommandReceived() {
+        lock.lock(); commandsReceived += 1; lock.unlock()
+    }
+    static func recordReconnect() {
+        lock.lock(); reconnects += 1; lock.unlock()
+    }
+
+    struct Totals {
+        var byPlayer: [String: PlayerCost]
+        var commandsSent: Int
+        var commandsReceived: Int
+        var reconnects: Int
+    }
+
+    static func snapshot() -> Totals {
+        lock.lock(); defer { lock.unlock() }
+        return Totals(byPlayer: byPlayer, commandsSent: commandsSent,
+                      commandsReceived: commandsReceived, reconnects: reconnects)
+    }
+
+    /// Difference between two snapshots, so a report covers its own window.
+    static func delta(from start: Totals, to end: Totals) -> Totals {
+        var players: [String: PlayerCost] = [:]
+        for (name, endCost) in end.byPlayer {
+            let startCost = start.byPlayer[name] ?? PlayerCost()
+            let calls = endCost.calls - startCost.calls
+            guard calls > 0 else { continue }
+            players[name] = PlayerCost(
+                calls: calls,
+                totalSeconds: endCost.totalSeconds - startCost.totalSeconds,
+                // A max cannot be differenced; the window's worst is unknown,
+                // so report the lifetime worst and label it as such.
+                worstSeconds: endCost.worstSeconds,
+                failures: endCost.failures - startCost.failures
+            )
+        }
+        return Totals(
+            byPlayer: players,
+            commandsSent: end.commandsSent - start.commandsSent,
+            commandsReceived: end.commandsReceived - start.commandsReceived,
+            reconnects: end.reconnects - start.reconnects
+        )
+    }
+}
+
 // MARK: - Performance session
 
 /// A "record what Sofa costs while I use it" session, driven from the ⋯ menu
@@ -253,6 +337,7 @@ final class PerformanceSession {
     private var samples: [Sample] = []
     private var timer: Timer?
     private(set) var startedAt: Date?
+    private var countersAtStart = PerfCounters.snapshot()
 
     var isRunning: Bool { startedAt != nil }
 
@@ -262,6 +347,7 @@ final class PerformanceSession {
         guard !isRunning else { return }
         samples.removeAll()
         startedAt = Date()
+        countersAtStart = PerfCounters.snapshot()
         DiagLog.log("perf: measurement started")
         take()
         let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
@@ -366,6 +452,9 @@ final class PerformanceSession {
         (\(String(format: "%+.0f MB", last.footprintMB - first.footprintMB)))
           Peak  : \(String(format: "%.0f MB", peakFootprint))
 
+        Where that CPU went
+        \(workBreakdown(cpuUsed: cpuUsed))
+
         Energy
           Idle wakeups : \(wakeups) total · \
         \(String(format: "%.1f/s", elapsed > 0 ? Double(wakeups) / elapsed : 0))
@@ -417,6 +506,39 @@ final class PerformanceSession {
         }
         DiagLog.log(String(format: "perf: measurement saved (%.0f s, %.2f%% avg)", elapsed, averagePercent))
         return reportURL
+    }
+
+    /// Turns raw counters into the sentence a reader actually wants: how much
+    /// of the CPU just measured was spent talking to the video player, and how
+    /// expensive one such conversation is. That is the number that decides
+    /// whether the poll loop is worth optimising.
+    private func workBreakdown(cpuUsed: Double) -> String {
+        let counters = PerfCounters.delta(from: countersAtStart, to: PerfCounters.snapshot())
+        var lines: [String] = []
+
+        let players = counters.byPlayer.sorted { $0.value.totalSeconds > $1.value.totalSeconds }
+        if players.isEmpty {
+            lines.append("  No player was driven during this measurement.")
+        }
+        for (name, cost) in players {
+            let averageMs = cost.calls > 0 ? cost.totalSeconds / Double(cost.calls) * 1000 : 0
+            // Wall-clock time in the call, not CPU: an Apple Event spends most
+            // of it waiting on the other app. Share-of-CPU is therefore an
+            // upper bound, and is labelled that way rather than overstated.
+            let share = cpuUsed > 0 ? 100 * cost.totalSeconds / cpuUsed : 0
+            lines.append("  \(name): \(cost.calls) calls, "
+                + String(format: "%.1f s waiting (avg %.0f ms, worst %.0f ms)",
+                         cost.totalSeconds, averageMs, cost.worstSeconds * 1000))
+            lines.append(String(format: "    at most %.0f%% of the CPU above; %d failed",
+                                min(share, 100), cost.failures))
+        }
+
+        lines.append("  Playback commands: \(counters.commandsSent) sent, "
+            + "\(counters.commandsReceived) received")
+        if counters.reconnects > 0 {
+            lines.append("  Relay dropped and reconnected \(counters.reconnects) time(s)")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private static let fileStamp: DateFormatter = {

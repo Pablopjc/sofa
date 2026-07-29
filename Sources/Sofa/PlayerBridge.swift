@@ -667,6 +667,19 @@ final class PlayerBridge {
     /// `waitUntilExit()` can hang forever if a browser stops answering Apple
     /// Events. Bound every command, including synchronous termination cleanup.
     private func runOSA(_ script: String, timeout: TimeInterval = 5.0) -> (String?, String?) {
+        // Every conversation with a player funnels through here, so this is
+        // the one place that can price them for a performance report.
+        let startedAt = Date()
+        let result = runOSAUncounted(script, timeout: timeout)
+        PerfCounters.recordPlayerCall(
+            player: player?.rawValue ?? "idle",
+            seconds: Date().timeIntervalSince(startedAt),
+            failed: result.1 != nil
+        )
+        return result
+    }
+
+    private func runOSAUncounted(_ script: String, timeout: TimeInterval) -> (String?, String?) {
         // Fast path: the same script compiled once and run in-process, ~8 ms
         // against ~195 ms for a fresh osascript. ScriptRunner declines (returns
         // nil) whenever it cannot answer promptly — a hung player, a script it

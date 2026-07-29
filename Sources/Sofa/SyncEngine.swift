@@ -921,6 +921,11 @@ final class SyncEngine {
     /// Send a message to the room (stamped with our id and timestamp).
     func send(_ message: SyncMessage) {
         guard let state, state.inRoom else { return }
+        // Playback commands only: ticks are 5 s heartbeats and would swamp the
+        // number that answers "how much did we actually sync tonight?".
+        if ["play", "pause", "seek"].contains(message.type) {
+            PerfCounters.recordCommandSent()
+        }
         var enriched = message
         if ["play", "pause", "seek", "tick"].contains(message.type) {
             enriched.name = enriched.name ?? state.nowPlaying
@@ -988,6 +993,9 @@ final class SyncEngine {
             latencyBaselineMs = baseline
             frameAgeSeconds = (deltaMs - baseline) / 1000
             msg.sentAt = sentAt + baseline
+        }
+        if ["play", "pause", "seek"].contains(msg.type) {
+            PerfCounters.recordCommandReceived()
         }
         do {
             switch msg.type {
