@@ -372,10 +372,99 @@ final class AppState: ObservableObject {
     }
 
     func showToast(_ text: String) {
+        // Toasts are Sofa's error surface, so mirroring them into the log
+        // gives a diagnostic report the user-visible timeline for free.
+        DiagLog.log("toast: \(text)")
         toast = text
         toastTimer?.invalidate()
         toastTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
             DispatchQueue.main.async { self?.toast = nil }
+        }
+    }
+
+    // MARK: - Diagnostics
+
+    /// Whether the one-shot macOS Accessibility consent dialog was already
+    /// burned. In-memory under SOFA_SIMULATE_AX_DENIED so rehearsing the
+    /// denial flow never pollutes the real per-user state.
+    private static var simulatedAXPrompted = false
+    private var axPromptedBefore: Bool {
+        get {
+            WindowArranger.isSimulatingAccessibilityDenial
+                ? Self.simulatedAXPrompted
+                : UserDefaults.standard.bool(forKey: "SofaAXPrompted")
+        }
+        set {
+            if WindowArranger.isSimulatingAccessibilityDenial {
+                Self.simulatedAXPrompted = newValue
+            } else {
+                UserDefaults.standard.set(newValue, forKey: "SofaAXPrompted")
+            }
+        }
+    }
+
+    /// Collects a full diagnostic report onto the Desktop and reveals it, so a
+    /// friend can send one file instead of describing symptoms from memory.
+    func saveDiagnosticReport() {
+        showToast("Collecting diagnostic info…")
+        DiagnosticReport.generate { [weak self] url in
+            if let url {
+                self?.showToast("Report saved to your Desktop — send that file to Pablo.")
+                // Revealing in Finder mid-Theater would activate Finder over
+                // the movie and tear the fullscreen the party depends on; the
+                // toast already says where the file is.
+                if self?.theaterActive != true {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            } else {
+                self?.showToast("Couldn't write the report to your Desktop.")
+            }
+        }
+    }
+
+    /// The way out of the "Accessibility looks on but Theater still won't
+    /// work" loop. macOS shows its consent dialog once per app ever, and a
+    /// grant recorded for an older copy or signature silently stops matching —
+    /// the switch looks on while AXIsProcessTrusted() says no. The only fix is
+    /// re-recording the entry, which needs the user's hands; this tells them
+    /// exactly how, names duplicate copies when those are the likely culprit,
+    /// and offers a diagnostic report if it still fails.
+    func presentAccessibilityRescue() {
+        DiagLog.log("theater: showing Accessibility rescue instructions")
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "macOS is still blocking Theater"
+        var info = """
+            The Accessibility switch can look on while macOS ignores it — that \
+            happens when the switch was recorded for an older copy of Sofa.
+
+            In \(SystemUINames.settingsApp) → \(SystemUINames.privacyPane) → \
+            Accessibility: select Sofa, remove it with the − button, then add it \
+            back from your Applications folder and turn it on.
+            """
+        if let advice = DiagnosticReport.copyAdvice() {
+            let listing = advice.delete.map { "• \($0.path)" }.joined(separator: "\n")
+            info += """
+
+
+                This Mac also has more than one copy of Sofa, and the permission \
+                may belong to one you're not running. Keep \(advice.keep.path) \
+                and delete:
+                \(listing)
+                """
+        }
+        info += "\n\nIf Theater still won't start after that, save a diagnostic report and send Pablo the file."
+        alert.informativeText = info
+        alert.addButton(withTitle: "Open Accessibility Settings")
+        alert.addButton(withTitle: "Save Diagnostic Report")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            WindowArranger.openAccessibilitySettings()
+        case .alertSecondButtonReturn:
+            saveDiagnosticReport()
+        default:
+            break
         }
     }
 
@@ -1210,11 +1299,24 @@ final class AppState: ObservableObject {
             return
         }
         guard WindowArranger.hasAccessibilityPermission else {
+            DiagLog.log("theater: blocked — Accessibility not granted"
+                + " (translocated=\(AppLocation.isRunningFromQuarantinedLocation),"
+                + " copies=\(DiagnosticReport.installedCopies().count))")
             if AppLocation.isRunningFromQuarantinedLocation {
                 showToast("Move Sofa to your Applications folder and reopen it — macOS won't keep Accessibility from here.")
-            } else {
+            } else if !axPromptedBefore {
+                // First ever attempt: the system consent dialog can still
+                // appear, so this is the moment it helps.
+                axPromptedBefore = true
                 WindowArranger.requestAccessibilityPermission()
                 showToast("Allow Sofa in Accessibility, then press the button again.")
+            } else {
+                // macOS shows that consent dialog only once per app, ever.
+                // Repeating the toast from here is a dead end — the user who
+                // already flipped the switch is stuck with a stale grant (an
+                // entry recorded for an older copy or signature). Escalate to
+                // instructions that actually clear it.
+                presentAccessibilityRescue()
             }
             return
         }

@@ -39,9 +39,21 @@ enum WindowArranger {
 
     // MARK: - Permission
 
-    static var hasAccessibilityPermission: Bool { AXIsProcessTrusted() }
+    /// Dev-only: SOFA_SIMULATE_AX_DENIED=1 makes Sofa behave as if macOS were
+    /// refusing Accessibility, so the denial and rescue flows can be exercised
+    /// without resetting this Mac's real TCC grant. Never set in normal use.
+    static let isSimulatingAccessibilityDenial =
+        ProcessInfo.processInfo.environment["SOFA_SIMULATE_AX_DENIED"] != nil
+
+    static var hasAccessibilityPermission: Bool {
+        if isSimulatingAccessibilityDenial { return false }
+        return AXIsProcessTrusted()
+    }
 
     static func requestAccessibilityPermission() {
+        // Under simulation, asking for real would burn macOS' one-shot consent
+        // dialog (and TCC state) for a rehearsal. Simulate the ask too.
+        guard !isSimulatingAccessibilityDenial else { return }
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
     }

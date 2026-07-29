@@ -61,12 +61,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// doesn't open." Show the panel instead. Fires only on user reactivation,
     /// never on the first launch (which sets up the menu-bar item on its own).
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        DiagLog.log("panel: reopen event (Dock/Finder/Spotlight)")
         guard panel != nil else { return true } // reopen before setup finished
         showPanel()
         return true
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        DiagLog.log("launch: Sofa \(version) at \(Bundle.main.bundlePath)"
+            + " translocated=\(AppLocation.isRunningFromQuarantinedLocation)"
+            + " copies=\(DiagnosticReport.installedCopies().count)"
+            + " macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
+        MainThreadWatchdog.shared.start()
         NSApp.setActivationPolicy(.accessory) // menu bar app: no Dock icon
         installEditMenu()
         UNUserNotificationCenter.current().delegate = self
@@ -95,6 +102,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     disconnected: disconnected,
                     friendNames: names
                 )
+            }
+            .store(in: &cancellables)
+
+        // Relay drops explain most "it stopped syncing" reports; date them.
+        AppState.shared.$disconnected
+            .removeDuplicates()
+            .dropFirst() // initial value is not an event
+            .sink { down in
+                DiagLog.log(down ? "relay: connection lost" : "relay: connection restored")
             }
             .store(in: &cancellables)
 
@@ -298,6 +314,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // MARK: - Panel toggling
 
     @objc private func togglePanel() {
+        // Logged because "I click the icon and nothing happens" is only
+        // diagnosable if the clicks themselves leave a trace.
+        DiagLog.log("panel: icon clicked (visible=\(panel.isVisible))")
         // The status item belongs to Sofa, so clicking it never trips the
         // outside-click monitor — visibility alone is the honest answer here.
         if panel.isVisible {
@@ -358,6 +377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func hidePanel() {
         stopWatchingOutsideClicks()
         panel.orderOut(nil)
+        DiagLog.log("panel: hidden")
     }
 
     private func showPanel() {
@@ -378,6 +398,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         panel.makeFirstResponder(nil)
         NSApp.activate(ignoringOtherApps: true)
         startWatchingOutsideClicks()
+        // If this line is ever followed by no visible panel, that is a bug
+        // worth catching in a report — record the outcome, not the intent.
+        DiagLog.log("panel: shown (visible=\(panel.isVisible), key=\(panel.isKeyWindow))")
     }
 
     private func positionPanel() {
@@ -424,6 +447,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // A log that ends without this line means the app died or was killed —
+        // itself a diagnostic clue.
+        DiagLog.log("terminate: clean quit")
         SocialService.shared.stop()
         PlayerBridge.shared.stop()
         AppState.shared.stopCallAudio()
@@ -435,6 +461,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if restoredTheater {
             RunLoop.current.run(until: Date().addingTimeInterval(2.0))
         }
+        // Last: the log writes are fire-and-forget on a background queue, and
+        // exit() discards whatever hasn't reached the disk yet — including the
+        // "terminate: clean quit" marker this whole method starts with.
+        DiagLog.flush()
     }
 
     nonisolated func userNotificationCenter(

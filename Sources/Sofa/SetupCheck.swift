@@ -28,6 +28,8 @@ final class SetupCheck: ObservableObject {
         var automationBundleID: String?
         /// Shows a "Show in Finder" button instead of "Open Settings".
         var revealApp: Bool = false
+        /// What that button reveals; nil means the running app bundle.
+        var revealURL: URL?
     }
 
     @Published private(set) var rows: [Row] = []
@@ -35,7 +37,7 @@ final class SetupCheck: ObservableObject {
 
     private init() {}
 
-    private static let automationTargets: [(bundleID: String, name: String)] = [
+    nonisolated static let automationTargets: [(bundleID: String, name: String)] = [
         ("com.apple.Safari", "Safari"),
         ("com.google.Chrome", "Google Chrome"),
         ("com.apple.QuickTimePlayerX", "QuickTime Player"),
@@ -58,6 +60,22 @@ final class SetupCheck: ObservableObject {
                 status: .denied,
                 settingsAnchor: nil,
                 revealApp: true
+            ))
+        }
+        // Several copies of Sofa on one Mac is the classic reason a permission
+        // switch shows ON while macOS ignores it: the switch belongs to the
+        // copy that is NOT running. Surface it here, where the friend is
+        // already looking for what is wrong.
+        if let advice = DiagnosticReport.copyAdvice() {
+            let listing = advice.delete.map { $0.path }.joined(separator: "\n")
+            next.append(Row(
+                id: "duplicate-copies",
+                title: "Delete the extra copies of Sofa",
+                detail: "This Mac has more than one copy of Sofa, and macOS may be granting permissions to one you're not running. Keep \(advice.keep.path) and delete:\n\(listing)",
+                status: .denied,
+                settingsAnchor: nil,
+                revealApp: true,
+                revealURL: advice.delete.first
             ))
         }
         for target in Self.automationTargets {
@@ -134,7 +152,7 @@ final class SetupCheck: ObservableObject {
         }
     }
 
-    private nonisolated static func automationStatus(bundleID: String, ask: Bool) -> Status {
+    nonisolated static func automationStatus(bundleID: String, ask: Bool) -> Status {
         let descriptor = NSAppleEventDescriptor(bundleIdentifier: bundleID)
         let status = AEDeterminePermissionToAutomateTarget(
             descriptor.aeDesc, typeWildCard, typeWildCard, ask
@@ -258,7 +276,13 @@ private struct SetupCheckRow: View {
         switch row.status {
         case .denied:
             if row.revealApp {
-                Button("Show in Finder") { AppLocation.revealInFinder() }
+                Button("Show in Finder") {
+                    if let url = row.revealURL {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    } else {
+                        AppLocation.revealInFinder()
+                    }
+                }
                     .sofaGlassButton()
                     .font(.system(size: 11))
                     .fixedSize()

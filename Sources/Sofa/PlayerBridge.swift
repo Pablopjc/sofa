@@ -1225,6 +1225,9 @@ final class PlayerBridge {
         let now = Date()
         guard now.timeIntervalSince(lastCommandErrorReportedAt) > 60 else { return }
         lastCommandErrorReportedAt = now
+        // The toast (below) is logged as it is shown; the raw error carries
+        // the detail a report actually needs (exact AppleScript failure text).
+        DiagLog.log("bridge: command error on \(player.rawValue): \(error.prefix(300))")
         let hint: String
         if error.contains("1743") || error.localizedCaseInsensitiveContains("not authorized") {
             hint = "macOS blocked Sofa from controlling \(player.shortLabel). Fix it in \(SystemUINames.automationPath)."

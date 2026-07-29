@@ -520,6 +520,30 @@ rm -rf /Applications/Sofa.app && ditto dist/Sofa.app /Applications/Sofa.app
 open /Applications/Sofa.app
 ```
 
+Diagnóstico a distancia (0.1.83): Sofa registra eventos (arranques, panel,
+Theater, permisos, toasts, cuelgues del hilo principal, desconexiones del
+relay) en `~/Library/Logs/Sofa/Sofa.log` (rota a 512 KB, guarda una
+generación). El menú ⋯ → "Save Diagnostic Report" escribe en el Escritorio un
+informe completo: versión/ruta/firma, translocación, copias duplicadas (con
+consejo keep/delete), estado de todos los permisos, estado de la app,
+alcanzabilidad del relay y la cola del log. Headless para soporte:
+
+```bash
+SOFA_DIAG_REPORT=1 /Applications/Sofa.app/Contents/MacOS/Sofa   # escribe en el Escritorio y sale
+```
+
+Flags dev: `SOFA_SIMULATE_AX_DENIED=1` simula Accesibilidad denegada (sin
+tocar el TCC real ni quemar el prompt del sistema; el flag SofaAXPrompted pasa
+a memoria). Trampas ya pagadas aquí: `UNUserNotificationCenter.current()`
+aborta el proceso si el binario no corre desde un .app (guard en
+`notificationStatus`); el watchdog usa Timer en `.common` (un `main.async` se
+muere de hambre durante `runModal` → cuelgues falsos) y se suspende con
+willSleep/didWake (el reloj de pared avanza durmiendo → cuelgues de 8 h
+falsos); DiagLog escribe con `O_APPEND` (dos copias corriendo — justo el caso
+que diagnostica — se pisarían con seek+write) y `DiagLog.flush()` va al final
+de `applicationWillTerminate` (sin él, `exit()` descarta la línea
+"terminate: clean quit" y todo quit parecería un crash).
+
 ---
 
 ## 10. Decisiones tomadas (no rehacer sin motivo)

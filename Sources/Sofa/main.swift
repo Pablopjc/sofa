@@ -27,6 +27,26 @@ MainActor.assumeIsolated {
         exit(1)
     }
 
+    // Headless diagnostic report — for support ("run this one command and send
+    // me the file") and for tests. SOFA_DIAG_REPORT=1 writes to the Desktop;
+    // any other value is used as the output directory. Prints the path, exits.
+    if let destination = ProcessInfo.processInfo.environment["SOFA_DIAG_REPORT"] {
+        _ = NSApplication.shared
+        _ = AppState.shared
+        let directory: URL? = destination == "1"
+            ? nil
+            : URL(fileURLWithPath: destination, isDirectory: true)
+        DiagnosticReport.generate(directory: directory) { url in
+            print(url?.path ?? "REPORT FAILED")
+            DiagLog.flush() // exit() discards queued log writes otherwise
+            exit(url == nil ? 1 : 0)
+        }
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 20))
+        print("REPORT TIMED OUT")
+        DiagLog.flush()
+        exit(1)
+    }
+
     // Dev-only design snapshot (never in released builds):
     //   SOFA_SNAPSHOT=/path/out.png  [SOFA_APPEARANCE=dark|light]
     if let path = ProcessInfo.processInfo.environment["SOFA_SNAPSHOT"] {

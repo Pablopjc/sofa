@@ -205,6 +205,7 @@ struct TitleBar: View {
                     AppState.shared.welcomeDone = false
                 }
                 Button("Setup Check…") { state.showingSetupCheck = true }
+                Button("Save Diagnostic Report") { state.saveDiagnosticReport() }
                 Divider()
                 Button("Try it solo — Test Zone") { state.enterTestZone() }
                     .disabled(state.inRoom || state.hosting || state.joining)
