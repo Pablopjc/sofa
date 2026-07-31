@@ -1171,6 +1171,23 @@ struct PlayerCard: View {
                 Spacer(minLength: 0)
             }
             .help("Pauses your movie when a friend loses connection, so nobody runs ahead")
+
+            // Only the guest can follow; for the host this switch would do
+            // nothing, so it isn't shown to them.
+            if !state.isHosting {
+                HStack(spacing: 7) {
+                    Toggle("", isOn: $state.followHostVideo)
+                        .toggleStyle(.checkbox)
+                        .controlSize(.small)
+                        .labelsHidden()
+                    Text("Follow the host to the next video")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .onTapGesture { state.followHostVideo.toggle() }
+                    Spacer(minLength: 0)
+                }
+                .help("When autoplay moves the host to another video, open it here too so you stay in sync")
+            }
         }
     }
 

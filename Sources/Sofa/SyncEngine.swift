@@ -1060,6 +1060,20 @@ final class SyncEngine {
                     state.friendNowPlaying = name
                     state.showToast("Your friend is watching “\(name)”")
                 }
+                // "loaded" is the earliest announcement that the host moved to
+                // another video; following from here beats waiting up to 5 s
+                // for the next tick to notice the mismatch.
+                if !Self.contentMatches(
+                    localURL: state.nowPlayingURL, remoteURL: msg.url,
+                    localTitle: state.nowPlaying, remoteTitle: msg.name
+                ) {
+                    state.noteMismatchedContentCommandDropped(
+                        remoteURL: msg.url,
+                        remoteTitle: msg.name,
+                        remoteTime: msg.time,
+                        remotePlaying: msg.playing
+                    )
+                }
             case "play", "pause", "seek", "tick":
                 if let name = msg.name { state.friendNowPlaying = name }
                 if let art = msg.art { state.friendNowPlayingArt = art }
@@ -1079,8 +1093,16 @@ final class SyncEngine {
                 )
                 guard sameContent else {
                     // Never drop silently: both sides believing they're synced
-                    // while nothing propagates was the reported failure.
-                    state.noteMismatchedContentCommandDropped()
+                    // while nothing propagates was the reported failure. A
+                    // guest can also follow the host to their new video from
+                    // here, which is what autoplay rolling on to the next
+                    // episode needs.
+                    state.noteMismatchedContentCommandDropped(
+                        remoteURL: msg.url,
+                        remoteTitle: msg.name,
+                        remoteTime: msg.time,
+                        remotePlaying: msg.playing
+                    )
                     break
                 }
                 // Placed AFTER the staleness and content gates on purpose: the

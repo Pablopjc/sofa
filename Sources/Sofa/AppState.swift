@@ -256,6 +256,19 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(autoPauseEnabled, forKey: "SofaAutoPause") }
     }
 
+    /// Follow the host when the video changes under them — autoplay rolling on
+    /// to the next episode, a "next up" suggestion, a new clip. Without this,
+    /// the party stays connected but every command is dropped for watching
+    /// different things, which reads as sync mysteriously dying mid-evening.
+    /// Only the guest follows; the host is the one being followed.
+    @Published var followHostVideo: Bool = UserDefaults.standard.object(
+        forKey: "SofaFollowHost"
+    ) as? Bool ?? true {
+        didSet { UserDefaults.standard.set(followHostVideo, forKey: "SofaFollowHost") }
+    }
+    private var lastFollowedURL: String?
+    private var lastFollowAt = Date.distantPast
+
     // "Resume where we left off": snapshot of the previous party's position.
     struct LastSession: Codable, Equatable {
         let title: String
@@ -315,11 +328,76 @@ final class AppState: ObservableObject {
     /// content. Surfaced (throttled) — silently dropping commands left both
     /// sides believing they were in sync while nothing propagated.
     private var lastMismatchToastAt = Date.distantPast
-    func noteMismatchedContentCommandDropped() {
+    /// A command arrived for content we are not watching. Either follow the
+    /// host to it, or — when we cannot or should not — say so, because both
+    /// sides believing they are synced while nothing propagates was the
+    /// original reported failure.
+    func noteMismatchedContentCommandDropped(
+        remoteURL: String? = nil,
+        remoteTitle: String? = nil,
+        remoteTime: Double? = nil,
+        remotePlaying: Bool? = nil
+    ) {
+        if followHostVideoIfAllowed(
+            url: remoteURL, title: remoteTitle,
+            time: remoteTime, playing: remotePlaying
+        ) { return }
+
         guard Date().timeIntervalSince(lastMismatchToastAt) > 60 else { return }
         lastMismatchToastAt = Date()
-        let friendLabel = friendNowPlaying.map { "“\($0)”" } ?? "something else"
+        let friendLabel = (remoteTitle ?? friendNowPlaying).map { "“\($0)”" } ?? "something else"
         showToast("Sync is off — your friend is watching \(friendLabel), not your video.")
+    }
+
+    /// Opens the host's video locally so the party converges again.
+    /// Returns true when a jump was started.
+    ///
+    /// Deliberately conservative — this navigates someone's browser on a
+    /// message from the network:
+    ///  - guests only, so the two sides can never chase each other;
+    ///  - browsers only, since a local file in QuickTime cannot follow a link;
+    ///  - only to a recognised streaming service, so a peer cannot send an
+    ///    arbitrary page (the room secret limits who can, but "a friend's Mac
+    ///    is compromised" should not turn into "arbitrary URL opens here");
+    ///  - and rate limited, so a title that fails to load cannot become a
+    ///    reload loop.
+    private func followHostVideoIfAllowed(
+        url: String?, title: String?, time: Double?, playing: Bool?
+    ) -> Bool {
+        let canonical = url.flatMap(PlayerBridge.canonicalMediaURL)
+        let service = StreamingService.from(urlString: canonical)
+        let decision = FollowHost.decide(
+            enabled: followHostVideo,
+            inRoom: inRoom,
+            isTestMode: isTestMode,
+            isHosting: isHosting,
+            playerIsBrowser: playerChoice.isBrowser,
+            canonicalURL: canonical,
+            serviceName: service?.name,
+            lastFollowedURL: lastFollowedURL,
+            secondsSinceLastFollow: Date().timeIntervalSince(lastFollowAt)
+        )
+        switch decision {
+        case .decline:
+            return false
+        case .alreadyFollowing:
+            return true // suppress the "sync is off" toast while we converge
+        case .follow(let target):
+            guard let targetURL = URL(string: target) else { return false }
+            lastFollowedURL = target
+            lastFollowAt = Date()
+            let serviceLabel = service.map { " on \($0.name)" } ?? ""
+            DiagLog.log("follow: jumping to the host's video\(serviceLabel)")
+            let label = title.map { "“\($0)”" } ?? "the next video"
+            showToast("Following the host to \(label)\(serviceLabel)…")
+            PlayerBridge.shared.openRemoteMedia(
+                url: targetURL,
+                player: playerChoice,
+                time: time ?? estimatedFriendPlaybackTime ?? 0,
+                playing: playing ?? friendIsPlaying ?? true
+            )
+            return true
+        }
     }
 
     func removeFriend(id: String) {

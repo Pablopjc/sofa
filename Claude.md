@@ -431,6 +431,7 @@ No hay XCTest. Los tests son harnesses ejecutables y suites del relay:
 
 # Parser de invitaciones (14 casos)
 swiftc -o /tmp/rt Tests/RoomTargetHarness/main.swift Sources/Sofa/RoomTarget.swift && /tmp/rt
+swiftc -o /tmp/fh Tests/FollowHostHarness/main.swift Sources/Sofa/FollowHost.swift && /tmp/fh
 
 # WebSocket nativo contra el relay real de producción
 swiftc -o /tmp/nw Tests/NWWebSocketHarness/main.swift && /tmp/nw https://sofa-sync-relay.pablopjc.workers.dev
