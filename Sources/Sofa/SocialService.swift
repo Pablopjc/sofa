@@ -187,12 +187,17 @@ final class SocialService: ObservableObject {
                     invitedFriendIDs.insert(friend.id)
                     state.showToast("Invitation sent to \(friend.name).")
                 } else {
-                    // The relay already knows the friend is offline — be
-                    // honest instead of letting the host wait forever, and
-                    // put the link in hand for the messaging fallback.
+                    // Offline is not a failure: the relay holds the invitation
+                    // and hands it over the moment their Sofa reconnects, so
+                    // they still get to accept or decline. Say that plainly,
+                    // mark the friend as invited like any other, and put the
+                    // link in hand in case the host wants to nudge them now.
+                    invitedFriendIDs.insert(friend.id)
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(state.inviteLink, forType: .string)
-                    state.showToast("\(friend.name) seems offline — link copied, send it to them.")
+                    state.showToast(
+                        "\(friend.name) doesn’t have Sofa open — they’ll get it when they do. Link copied."
+                    )
                 }
                 await refreshFriends()
             } catch {

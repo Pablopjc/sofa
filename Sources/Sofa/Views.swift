@@ -150,6 +150,7 @@ struct TitleBar: View {
     @ObservedObject var state = AppState.shared
     @ObservedObject var social = SocialService.shared
     @ObservedObject var fakeCall = FakeCall.shared
+    @ObservedObject var loginItem = LoginItem.shared
 
     var body: some View {
         HStack(spacing: 8) {
@@ -204,6 +205,13 @@ struct TitleBar: View {
                     UserDefaults.standard.set(false, forKey: "SofaWelcomeDone")
                     AppState.shared.welcomeDone = false
                 }
+                // Off by default. On, Sofa stays in the menu bar, which is what
+                // lets a friend's invitation reach this Mac without the app
+                // being opened first.
+                Button(loginItem.enabled ? "✓ Open Sofa at login" : "Open Sofa at login") {
+                    loginItem.toggle()
+                }
+                .help("Keeps Sofa in the menu bar, so invitations reach you without opening it.")
                 Button("Setup Check…") { state.showingSetupCheck = true }
                 Button("Save Diagnostic Report") { state.saveDiagnosticReport() }
                 Button(state.measuringPerformance

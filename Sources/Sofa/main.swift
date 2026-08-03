@@ -27,6 +27,21 @@ MainActor.assumeIsolated {
         exit(1)
     }
 
+    // Dev-only login-item probe: SOFA_LOGIN_ITEM=status|on|off reports or flips
+    // "Open Sofa at login" without driving the menu, so the registration can be
+    // verified for real rather than assumed. Prints the resulting state.
+    if let command = ProcessInfo.processInfo.environment["SOFA_LOGIN_ITEM"] {
+        _ = NSApplication.shared
+        let item = LoginItem.shared
+        if (command == "on" && !item.enabled) || (command == "off" && item.enabled) {
+            item.toggle()
+        } else {
+            item.refresh()
+        }
+        print("loginItem enabled=\(item.enabled)")
+        exit(command == "status" || item.enabled == (command == "on") ? 0 : 1)
+    }
+
     // Headless diagnostic report — for support ("run this one command and send
     // me the file") and for tests. SOFA_DIAG_REPORT=1 writes to the Desktop;
     // any other value is used as the output directory. Prints the path, exits.
