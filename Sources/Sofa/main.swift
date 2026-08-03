@@ -27,6 +27,23 @@ MainActor.assumeIsolated {
         exit(1)
     }
 
+    // Dev-only: SOFA_UNINSTALL_DRYRUN=1 prints exactly what "Uninstall Sofa…"
+    // would remove, and removes nothing.
+    if ProcessInfo.processInfo.environment["SOFA_UNINSTALL_DRYRUN"] != nil {
+        _ = NSApplication.shared
+        for line in Maintenance.uninstallPlan() { print(line) }
+        exit(0)
+    }
+
+    // Dev-only: SOFA_RESET_PERMISSIONS=1 runs the same reset the ⋯ menu does,
+    // without the confirmation or the restart, so it can be verified headlessly.
+    if ProcessInfo.processInfo.environment["SOFA_RESET_PERMISSIONS"] != nil {
+        _ = NSApplication.shared
+        let ok = Maintenance.resetPermissions()
+        print("resetPermissions → \(ok ? "ok" : "failed")")
+        exit(ok ? 0 : 1)
+    }
+
     // Dev-only login-item probe: SOFA_LOGIN_ITEM=status|on|off reports or flips
     // "Open Sofa at login" without driving the menu, so the registration can be
     // verified for real rather than assumed. Prints the resulting state.

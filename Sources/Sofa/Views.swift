@@ -214,6 +214,13 @@ struct TitleBar: View {
                 .help("Keeps Sofa in the menu bar, so invitations reach you without opening it.")
                 Button("Setup Check…") { state.showingSetupCheck = true }
                 Button("Save Diagnostic Report") { state.saveDiagnosticReport() }
+                // Tucked in a submenu: both are last resorts, and Uninstall in
+                // particular should never be a slip of the mouse away.
+                Menu("Fix a Problem") {
+                    Button("Permission Keeps Being Asked…") { Maintenance.presentResetPermissions() }
+                    Divider()
+                    Button("Uninstall Sofa…") { Maintenance.presentUninstall() }
+                }
                 Button(state.measuringPerformance
                        ? "Stop Measuring & Save Report"
                        : "Measure Sofa's CPU & Memory…") {

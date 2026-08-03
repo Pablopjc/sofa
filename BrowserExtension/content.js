@@ -136,7 +136,7 @@
     let node = video.parentElement;
     let child = null;
     while (node && node !== fs) {
-      child = node;
+      if (isSizable(node)) child = node;
       node = node.parentElement;
     }
     // HBO Max puts the <video> straight inside the element it fullscreens, so

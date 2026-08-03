@@ -547,9 +547,14 @@ final class AppState: ObservableObject {
             The Accessibility switch can look on while macOS ignores it — that \
             happens when the switch was recorded for an older copy of Sofa.
 
-            In \(SystemUINames.settingsApp) → \(SystemUINames.privacyPane) → \
-            Accessibility: select Sofa, remove it with the − button, then add it \
-            back from your Applications folder and turn it on.
+            The quickest cure is to make macOS forget what it recorded for Sofa \
+            and ask again from scratch — no password, nothing else on this Mac \
+            is affected. Sofa restarts, and the next time you enter Theater you \
+            get a fresh request you can say yes to.
+
+            To do it by hand instead: \(SystemUINames.settingsApp) → \
+            \(SystemUINames.privacyPane) → Accessibility, select Sofa, remove it \
+            with the − button, then add it back and turn it on.
             """
         if let advice = DiagnosticReport.copyAdvice() {
             let listing = advice.delete.map { "• \($0.path)" }.joined(separator: "\n")
@@ -564,13 +569,16 @@ final class AppState: ObservableObject {
         }
         info += "\n\nIf Theater still won't start after that, save a diagnostic report and send Pablo the file."
         alert.informativeText = info
+        alert.addButton(withTitle: "Ask Me Again")
         alert.addButton(withTitle: "Open Accessibility Settings")
         alert.addButton(withTitle: "Save Diagnostic Report")
         alert.addButton(withTitle: "Cancel")
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            WindowArranger.openAccessibilitySettings()
+            Maintenance.presentResetPermissions()
         case .alertSecondButtonReturn:
+            WindowArranger.openAccessibilitySettings()
+        case .alertThirdButtonReturn:
             saveDiagnosticReport()
         default:
             break

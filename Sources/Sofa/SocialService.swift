@@ -507,6 +507,13 @@ final class SocialService: ObservableObject {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
+    /// Uninstall only. The device credential is the Friends identity — leaving
+    /// it in the keychain would silently re-attach a future reinstall to an
+    /// account the user just asked to remove.
+    static func deleteStoredIdentityForUninstall() {
+        KeychainCredential.delete()
+    }
+
     static func friendLinkParts(_ raw: String) -> (id: String, code: String)? {
         guard let url = URL(string: raw), url.scheme?.lowercased() == "sofa",
               url.host?.lowercased() == "friend" else { return nil }
