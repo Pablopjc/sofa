@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.79-generic";
+  const VERSION = "0.1.88-generic";
   // Derived, never written out a second time: Sofa builds the event name it
   // dispatches as "sofa-theater-command-" + the VERSION it parses out of this
   // file, so a hand-typed copy that lags a version bump is a listener bound to
@@ -160,10 +160,27 @@
     let best = null;
     let node2 = video;
     while (node2 && node2 !== fs) {
-      if (fillsViewport(node2)) best = node2;
+      if (isSizable(node2) && fillsViewport(node2)) best = node2;
       node2 = node2.parentElement;
     }
     return best || target;
+  }
+
+  /// Can a width even land on this element?
+  ///
+  /// CSS width does not apply to a non-replaced inline box, and `display:
+  /// contents` boxes are not laid out at all — so either one measures full
+  /// width forever, installLayout's check fails, and Theater reverts with
+  /// `not-covering` while looking for all the world like a CSS specificity
+  /// problem. Disney+ walked straight into this by moving its fullscreen
+  /// element down a level: the outermost descendant of the new one is
+  /// <disney-web-player>, a custom element with no display rule of its own,
+  /// which therefore defaults to inline. The <video> is excluded from this
+  /// test by its caller — it is a replaced element, so width applies to it.
+  function isSizable(element) {
+    if (!element) return false;
+    const display = getComputedStyle(element).display;
+    return display !== "inline" && display !== "contents" && display !== "none";
   }
 
   /// Does this element already span the viewport top to bottom, flush left?
